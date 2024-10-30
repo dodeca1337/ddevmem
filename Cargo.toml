@@ -6,6 +6,7 @@ authors = ["Dodeca Shaven <dodeca@tutamail.com>"]
 repository = "https://github.com/dodeca1337/ddevmem"
 license = "MIT"
 keywords = ["devmem"]
+description = "Library to access linux linux /dev/mem"
 
 [dependencies]
 memmap2 = "0.9.5"
