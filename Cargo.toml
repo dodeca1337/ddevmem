@@ -1,0 +1,10 @@
+[package]
+name = "ddevmem"
+version = "0.1.0"
+edition = "2021"
+authors = ["Dodeca Shaven <dodeca@tutamail.com>"]
+
+[dependencies]
+memmap2 = "0.9.5"
+page_size = "0.6.0"
+bytemuck = "1.19.0"
