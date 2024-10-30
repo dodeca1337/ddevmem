@@ -24,7 +24,7 @@ impl Debug for DevMem {
 }
 
 impl DevMem {
-    pub fn new(address: usize, size: Option<usize>) -> Result<Self, Error> {
+    pub unsafe fn new(address: usize, size: Option<usize>) -> Result<Self, Error> {
         let page_size = page_size::get();
         let size = size.unwrap_or(page_size);
 
@@ -35,13 +35,11 @@ impl DevMem {
             .open("/dev/mem")
             .map_err(Error::CentOpenFile)?;
 
-        let mmap = unsafe {
-            MmapOptions::new()
-                .len(size)
-                .offset(address as u64)
-                .map_mut(&file)
-                .map_err(Error::CentMmapFile)?
-        };
+        let mmap = MmapOptions::new()
+            .len(size)
+            .offset(address as u64)
+            .map_mut(&file)
+            .map_err(Error::CentMmapFile)?;
 
         Ok(Self { mmap, address })
     }
@@ -73,7 +71,7 @@ impl DevMem {
         }
 
         let data = &self.data()[offset..offset + std::mem::size_of::<T>()];
-        Some(black_box(bytemuck::from_bytes(data)))
+        Some(bytemuck::from_bytes(data))
     }
 
     #[inline(always)]
@@ -83,7 +81,7 @@ impl DevMem {
         }
 
         let data = &mut self.data_mut()[offset..offset + std::mem::size_of::<T>()];
-        Some(black_box(bytemuck::from_bytes_mut(data)))
+        Some(bytemuck::from_bytes_mut(data))
     }
 
     #[inline(always)]
@@ -93,7 +91,7 @@ impl DevMem {
         }
 
         let data = &self.data()[offset..offset + std::mem::size_of::<T>() * count];
-        Some(black_box(bytemuck::cast_slice(data)))
+        Some(bytemuck::cast_slice(data))
     }
 
     #[inline(always)]
@@ -107,6 +105,6 @@ impl DevMem {
         }
 
         let data = &mut self.data_mut()[offset..offset + std::mem::size_of::<T>() * count];
-        Some(black_box(bytemuck::cast_slice_mut(data)))
+        Some(bytemuck::cast_slice_mut(data))
     }
 }
