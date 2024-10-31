@@ -1,16 +1,20 @@
+#[cfg(any(feature = "device", feature = "emulator"))]
 mod devmem;
+#[cfg(feature = "reg")]
 mod reg;
 
-#[doc(hidden)]
-pub use concat_idents::concat_idents as __concat_idents;
-
+#[cfg(any(feature = "device", feature = "emulator"))]
 #[doc(inline)]
 pub use devmem::DevMem;
 
+#[cfg(feature = "reg")]
 #[doc(inline)]
 pub use reg::{ReadOnlyReg, ReadOnlySliceReg, Reg, SliceReg};
 
-#[macro_export]
+#[cfg(feature = "register-map")]
+#[doc(hidden)]
+pub use concat_idents::concat_idents as __concat_idents;
+
 /// A macro to define a register map structure with associated methods for accessing hardware registers.
 /// # Usage
 ///
@@ -29,6 +33,8 @@ pub use reg::{ReadOnlyReg, ReadOnlySliceReg, Reg, SliceReg};
 /// let reg1_value = *reg_map.reg1();
 /// *reg_map.mut_reg2() = reg1_value;
 /// ```
+#[cfg(feature = "register-map")]
+#[macro_export]
 macro_rules! register_map {
     ($vis: vis unsafe map $name: ident {$($reg_offset: expr => $reg_kind: ident $reg_name: ident : $reg_ty: ty),+}) => {
         $vis struct $name {
@@ -63,6 +69,7 @@ macro_rules! register_map {
     };
 }
 
+#[cfg(feature = "register-map")]
 #[macro_export(local_inner_macros)]
 #[doc(hidden)]
 macro_rules! __register_methods {

@@ -1,6 +1,11 @@
 use bytemuck::{AnyBitPattern, NoUninit};
+use std::{fmt::Debug, hint::black_box, io::Error as IOError};
+
+#[cfg(feature = "device")]
 use memmap2::{MmapMut, MmapOptions};
-use std::{fmt::Debug, fs::OpenOptions, hint::black_box, io::Error as IOError};
+
+#[cfg(feature = "device")]
+use std::fs::OpenOptions;
 
 /// Represents an error that can occur while map [DevMem](crate::DevMem).
 #[derive(Debug)]
@@ -13,6 +18,9 @@ pub enum Error {
 
 /// Represents a memory-mapped device memory.
 pub struct DevMem {
+    #[cfg(all(feature = "emulator", not(feature = "device")))]
+    mmap: Vec<u8>,
+    #[cfg(all(feature = "device", not(feature = "emulator")))]
     mmap: MmapMut,
     address: usize,
 }
@@ -37,20 +45,29 @@ impl DevMem {
         let page_size = page_size::get();
         let size = size.unwrap_or(page_size);
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(false)
-            .open("/dev/mem")
-            .map_err(Error::CentOpenFile)?;
+        #[cfg(all(feature = "device", not(feature = "emulator")))]
+        {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(false)
+                .open("/dev/mem")
+                .map_err(Error::CentOpenFile)?;
 
-        let mmap = MmapOptions::new()
-            .len(size)
-            .offset(address as u64)
-            .map_mut(&file)
-            .map_err(Error::CentMmapFile)?;
+            let mmap = MmapOptions::new()
+                .len(size)
+                .offset(address as u64)
+                .map_mut(&file)
+                .map_err(Error::CentMmapFile)?;
 
-        Ok(Self { mmap, address })
+            Ok(Self { mmap, address })
+        }
+
+        #[cfg(all(feature = "emulator", not(feature = "device")))]
+        {
+            let mmap = vec![0; size];
+            Ok(Self { mmap, address })
+        }
     }
 
     /// Returns the starting address of the memory-mapped region.
