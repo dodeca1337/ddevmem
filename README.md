@@ -10,7 +10,7 @@ Add `ddevmem` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ddevmem = "0.2.2"
+ddevmem = "0.2.4"
 ```
 
 ## Example
@@ -28,7 +28,7 @@ register_map! {
 
 let devmem = unsafe { DevMem::new(0xD0DE_0000, None).unwrap() };
 let mut reg_map = unsafe { MyRegisterMap::new(std::sync::Arc::new(devmem)).unwrap() };
-let (reg0_offset, reg0_address) = (reg_map.reg0_address(), reg_map.reg0_offset());
+let (reg0_address, reg0_offset) = (reg_map.reg0_address(), reg_map.reg0_offset());
 let reg1_value = *reg_map.reg1();
 *reg_map.mut_reg2() = reg1_value;
 ```
