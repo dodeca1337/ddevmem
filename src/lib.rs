@@ -66,6 +66,9 @@ macro_rules! register_map {
                 $crate::__register_methods!($vis reg $reg_offset => $reg_kind $reg_name: $reg_ty);
             )+
         }
+
+        unsafe impl Sync for $name {}
+        unsafe impl Send for $name {}
     };
 }
 
