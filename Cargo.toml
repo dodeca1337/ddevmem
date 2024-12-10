@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.2.4"
+version = "0.3.0"
 edition = "2021"
 authors = ["Dodeca Shaven <dodeca@tutamail.com>"]
 repository = "https://github.com/dodeca1337/ddevmem"
@@ -18,7 +18,7 @@ license.workspace = true
 [dependencies]
 memmap2 = { version = "0.9.5", optional = true }
 page_size = "0.6.0"
-bytemuck = "1.19.0"
+bytemuck = "1.20.0"
 concat-idents = { version = "1.1.5", optional = true }
 
 [features]

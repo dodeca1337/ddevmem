@@ -5,7 +5,7 @@ mod reg;
 
 #[cfg(any(feature = "device", feature = "emulator"))]
 #[doc(inline)]
-pub use devmem::DevMem;
+pub use devmem::{DevMem, Error};
 
 #[cfg(feature = "reg")]
 #[doc(inline)]
@@ -31,7 +31,7 @@ pub use concat_idents::concat_idents as __concat_idents;
 /// let mut reg_map = unsafe { MyRegisterMap::new(std::sync::Arc::new(devmem)).unwrap() };
 /// let (reg0_address, reg0_offset) = (reg_map.reg0_address(), reg_map.reg0_offset());
 /// let reg1_value = *reg_map.reg1();
-/// *reg_map.mut_reg2() = reg1_value;
+/// *reg_map.reg2_mut() = reg1_value;
 /// ```
 #[cfg(feature = "register-map")]
 #[macro_export]
@@ -114,7 +114,7 @@ macro_rules! __register_methods {
         }
     };
     ($vis: vis reg write $offset: literal => $name: ident : $ty: ty) => {
-        $crate::__concat_idents!(fn_name = mut_, $name, {
+        $crate::__concat_idents!(fn_name = $name, _mut, {
             /// Returns the mutable reference to the register value.
             #[inline(always)]
             $vis fn fn_name(&mut self) -> &mut $ty {
