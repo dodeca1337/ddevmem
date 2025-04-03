@@ -16,6 +16,15 @@ pub enum Error {
     CentMmapFile(IOError),
 }
 
+impl Into<IOError> for Error {
+    fn into(self) -> IOError {
+        match self {
+            Error::CentOpenFile(err) => err,
+            Error::CentMmapFile(err) => err,
+        }
+    }
+}
+
 /// Represents a memory-mapped device memory.
 pub struct DevMem {
     #[cfg(all(feature = "emulator", not(feature = "device")))]
