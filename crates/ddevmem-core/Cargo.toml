@@ -1,0 +1,17 @@
+[package]
+name = "ddevmem-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+memmap2 = { version = "0.9.5", optional = true }
+page_size = "0.6.0"
+bytemuck = "1.20.0"
+
+[features]
+default = ["device"]
+device = ["memmap2"]
+emulator = []
