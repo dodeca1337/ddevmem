@@ -38,6 +38,7 @@
   .bf-val { color: var(--green); font-weight: 600; }
   .bf-doc { color: var(--text2); font-style: italic; }
   .bf-input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 2px 6px; border-radius: 3px; font-family: inherit; font-size: .8rem; width: 8ch; }
+  select.bf-input { width: auto; min-width: 10ch; }
   .error { color: var(--red); font-size: .8rem; }
   .status { font-size: .75rem; color: var(--text2); margin-left: .5rem; }
   #auto-refresh { margin: 0 .5rem; }
@@ -163,8 +164,17 @@ function renderAll() {
           html += '<tr><td>' + escHtml(bf.name) + '</td><td>' + bits + '</td>'
                 + '<td class="bf-val" id="bf-' + bfid + '">—</td>';
           if (reg.access !== 'ro') {
-            html += '<td><input class="bf-input" id="bfi-' + bfid + '" placeholder="val">'
-                  + '<button onclick="writeBitfield(\'' + map.slug + '\',' + reg.offset + ',' + bf.lo + ',' + bf.hi + ',\'' + bf.name + '\',' + reg.width + ')">Set</button></td>';
+            html += '<td>';
+            if (bf.variants && bf.variants.length > 0) {
+              html += '<select class="bf-input" id="bfi-' + bfid + '">';
+              for (const v of bf.variants) {
+                html += '<option value="' + v.value + '">' + escHtml(v.name) + ' (' + v.value + ')</option>';
+              }
+              html += '</select>';
+            } else {
+              html += '<input class="bf-input" id="bfi-' + bfid + '" placeholder="val">';
+            }
+            html += ' <button onclick="writeBitfield(\'' + map.slug + '\',' + reg.offset + ',' + bf.lo + ',' + bf.hi + ',\'' + bf.name + '\',' + reg.width + ')">Set</button></td>';
           }
           html += '<td class="bf-doc">' + escHtml(bf.doc) + '</td></tr>';
         }
@@ -198,7 +208,16 @@ function updateBitfields(slug, offset, value) {
   if (!reg) return;
   for (const bf of reg.bitfields) {
     const el = $('bf-' + slug + '-' + offset + '-' + bf.name);
-    if (el) el.textContent = extractBits(value, bf.lo, bf.hi);
+    if (!el) continue;
+    const rawVal = extractBits(value, bf.lo, bf.hi);
+    if (bf.variants && bf.variants.length > 0) {
+      const v = bf.variants.find(v => v.value === rawVal);
+      el.textContent = v ? v.name + ' (' + rawVal + ')' : String(rawVal);
+      const sel = $('bfi-' + slug + '-' + offset + '-' + bf.name);
+      if (sel && sel.tagName === 'SELECT') sel.value = String(rawVal);
+    } else {
+      el.textContent = rawVal;
+    }
   }
 }
 

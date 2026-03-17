@@ -77,6 +77,15 @@ use tokio::sync::Mutex;
 
 // ─── Metadata types ──────────────────────────────────────────────────────────
 
+/// An enum variant exposed for the web UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct VariantInfo {
+    /// Variant name.
+    pub name: &'static str,
+    /// Raw integer value.
+    pub value: u64,
+}
+
 /// Description of a single bitfield within a register.
 #[derive(Debug, Clone, Serialize)]
 pub struct BitfieldInfo {
@@ -88,6 +97,10 @@ pub struct BitfieldInfo {
     pub lo: u32,
     /// High bit index (inclusive).
     pub hi: u32,
+    /// Type hint: `"raw"`, `"bool"`, `"u8"`, or an enum name.
+    pub field_type: &'static str,
+    /// Enum/bool variants (empty for plain integer fields).
+    pub variants: Vec<VariantInfo>,
 }
 
 /// Description of a single register in the map.

@@ -194,6 +194,9 @@ macro_rules! register_map {
             devmem: std::sync::Arc<$crate::DevMem>,
         }
 
+        // Generate any enums from `as enum` bitfields at module scope.
+        $crate::__register_map_extract_enums!($vis ($bus) $($tt)+);
+
         impl $name {
             /// Creates a new register map wrapping the given [`DevMem`].
             ///
@@ -346,21 +349,159 @@ macro_rules! __register_collect_bitfields {
     // empty
     ($bf:ident) => {};
 
+    // ── as bool ──────────────────────────────────────────────────────────
+
+    // Inclusive range as bool, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as bool , $($rest:tt)*) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi, "bool",
+            vec![$crate::web::VariantInfo { name: "false", value: 0 },
+                 $crate::web::VariantInfo { name: "true",  value: 1 }]);
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Inclusive range as bool, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as bool) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi, "bool",
+            vec![$crate::web::VariantInfo { name: "false", value: 0 },
+                 $crate::web::VariantInfo { name: "true",  value: 1 }]);
+    };
+
+    // Exclusive range as bool, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as bool , $($rest:tt)*) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi - 1, "bool",
+            vec![$crate::web::VariantInfo { name: "false", value: 0 },
+                 $crate::web::VariantInfo { name: "true",  value: 1 }]);
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Exclusive range as bool, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as bool) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi - 1, "bool",
+            vec![$crate::web::VariantInfo { name: "false", value: 0 },
+                 $crate::web::VariantInfo { name: "true",  value: 1 }]);
+    };
+
+    // Single bit as bool, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt as bool , $($rest:tt)*) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $bit, $bit, "bool",
+            vec![$crate::web::VariantInfo { name: "false", value: 0 },
+                 $crate::web::VariantInfo { name: "true",  value: 1 }]);
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Single bit as bool, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt as bool) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $bit, $bit, "bool",
+            vec![$crate::web::VariantInfo { name: "false", value: 0 },
+                 $crate::web::VariantInfo { name: "true",  value: 1 }]);
+    };
+
+    // ── as enum ──────────────────────────────────────────────────────────
+
+    // Inclusive range as enum, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as enum $ename:ident { $($ebody:tt)* } , $($rest:tt)*) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi, stringify!($ename),
+            $crate::__enum_variants!($($ebody)*));
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Inclusive range as enum, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as enum $ename:ident { $($ebody:tt)* }) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi, stringify!($ename),
+            $crate::__enum_variants!($($ebody)*));
+    };
+
+    // Exclusive range as enum, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as enum $ename:ident { $($ebody:tt)* } , $($rest:tt)*) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi - 1, stringify!($ename),
+            $crate::__enum_variants!($($ebody)*));
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Exclusive range as enum, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as enum $ename:ident { $($ebody:tt)* }) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi - 1, stringify!($ename),
+            $crate::__enum_variants!($($ebody)*));
+    };
+
+    // Single bit as enum, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt as enum $ename:ident { $($ebody:tt)* } , $($rest:tt)*) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $bit, $bit, stringify!($ename),
+            $crate::__enum_variants!($($ebody)*));
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Single bit as enum, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt as enum $ename:ident { $($ebody:tt)* }) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $bit, $bit, stringify!($ename),
+            $crate::__enum_variants!($($ebody)*));
+    };
+
+    // ── as cast type ─────────────────────────────────────────────────────
+
+    // Inclusive range as $cast_ty, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as $cast_ty:ty , $($rest:tt)*) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi, stringify!($cast_ty), Vec::new());
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Inclusive range as $cast_ty, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as $cast_ty:ty) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi, stringify!($cast_ty), Vec::new());
+    };
+
+    // Exclusive range as $cast_ty, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as $cast_ty:ty , $($rest:tt)*) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi - 1, stringify!($cast_ty), Vec::new());
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Exclusive range as $cast_ty, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as $cast_ty:ty) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi - 1, stringify!($cast_ty), Vec::new());
+    };
+
+    // Single bit as $cast_ty, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt as $cast_ty:ty , $($rest:tt)*) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $bit, $bit, stringify!($cast_ty), Vec::new());
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Single bit as $cast_ty, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt as $cast_ty:ty) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $bit, $bit, stringify!($cast_ty), Vec::new());
+    };
+
+    // ── untyped (raw) ────────────────────────────────────────────────────
+
     // Inclusive range, more follow
     ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt , $($rest:tt)*) => {
-        {
-            let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
-            $bf.push($crate::web::BitfieldInfo {
-                name: stringify!($field),
-                doc,
-                lo: $lo,
-                hi: $hi,
-            });
-        }
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi, "raw", Vec::new());
         $crate::__register_collect_bitfields!($bf $($rest)*);
     };
     // Inclusive range, last
     ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi, "raw", Vec::new());
+    };
+
+    // Exclusive range, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt , $($rest:tt)*) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi - 1, "raw", Vec::new());
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Exclusive range, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $lo, $hi - 1, "raw", Vec::new());
+    };
+
+    // Single bit, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt , $($rest:tt)*) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $bit, $bit, "raw", Vec::new());
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Single bit, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt) => {
+        $crate::__push_bitfield_info!($bf $(#[$fmeta])* ; $field, $bit, $bit, "raw", Vec::new());
+    };
+}
+
+/// Helper: push a `BitfieldInfo` with all fields.
+#[cfg(feature = "web")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __push_bitfield_info {
+    ($bf:ident $(#[$fmeta:meta])* ; $field:ident, $lo:expr, $hi:expr, $ft:expr, $variants:expr) => {
         {
             let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
             $bf.push($crate::web::BitfieldInfo {
@@ -368,60 +509,25 @@ macro_rules! __register_collect_bitfields {
                 doc,
                 lo: $lo,
                 hi: $hi,
+                field_type: $ft,
+                variants: $variants,
             });
         }
     };
+}
 
-    // Exclusive range, more follow
-    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt , $($rest:tt)*) => {
-        {
-            let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
-            $bf.push($crate::web::BitfieldInfo {
-                name: stringify!($field),
-                doc,
-                lo: $lo,
-                hi: $hi - 1,
-            });
-        }
-        $crate::__register_collect_bitfields!($bf $($rest)*);
-    };
-    // Exclusive range, last
-    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt) => {
-        {
-            let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
-            $bf.push($crate::web::BitfieldInfo {
-                name: stringify!($field),
-                doc,
-                lo: $lo,
-                hi: $hi - 1,
-            });
-        }
-    };
-
-    // Single bit, more follow
-    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt , $($rest:tt)*) => {
-        {
-            let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
-            $bf.push($crate::web::BitfieldInfo {
-                name: stringify!($field),
-                doc,
-                lo: $bit,
-                hi: $bit,
-            });
-        }
-        $crate::__register_collect_bitfields!($bf $($rest)*);
-    };
-    // Single bit, last
-    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt) => {
-        {
-            let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
-            $bf.push($crate::web::BitfieldInfo {
-                name: stringify!($field),
-                doc,
-                lo: $bit,
-                hi: $bit,
-            });
-        }
+/// Helper: produce a `Vec<VariantInfo>` from enum body tokens.
+#[cfg(feature = "web")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __enum_variants {
+    ($($variant:ident = $val:expr),* $(,)?) => {
+        vec![
+            $($crate::web::VariantInfo {
+                name: stringify!($variant),
+                value: $val as u64,
+            }),*
+        ]
     };
 }
 
@@ -439,6 +545,126 @@ macro_rules! __extract_doc_str {
     (#[$other:meta] $(#[$rest:meta])*) => {
         $crate::__extract_doc_str!($(#[$rest])*)
     };
+}
+
+/// Internal macro: walk register entries and extract `as enum` definitions
+/// at module scope (outside `impl` blocks).
+#[cfg(feature = "register-map")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __register_map_extract_enums {
+    // Entry with bitfields, more entries follow
+    ($vis:vis ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty { $($fields:tt)* } , $($rest:tt)+) => {
+        $crate::__register_extract_enums!($vis, $ty { $($fields)* });
+        $crate::__register_map_extract_enums!($vis ($bus) $($rest)+);
+    };
+    // Entry with bitfields, last entry
+    ($vis:vis ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty { $($fields:tt)* }) => {
+        $crate::__register_extract_enums!($vis, $ty { $($fields)* });
+    };
+    // Entry without bitfields, more entries follow
+    ($vis:vis ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty , $($rest:tt)+) => {
+        $crate::__register_map_extract_enums!($vis ($bus) $($rest)+);
+    };
+    // Entry without bitfields, last entry
+    ($vis:vis ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty) => {};
+}
+
+/// Internal macro: walk bitfield entries within one register and generate
+/// `__register_enum!` for every `as enum` field; skip everything else.
+#[cfg(feature = "register-map")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __register_extract_enums {
+    // ── empty ────────────────────────────────────────────────────────────
+    ($vis:vis, $ty:ty {}) => {};
+
+    // ── enum fields (generate enum) ──────────────────────────────────────
+
+    // Inclusive range, more follow
+    ($vis:vis, $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as enum $ename:ident { $($ebody:tt)* } , $($rest:tt)*
+    }) => {
+        $crate::__register_enum!($vis $ename : $ty { $($ebody)* });
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    // Inclusive range, last
+    ($vis:vis, $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as enum $ename:ident { $($ebody:tt)* }
+    }) => {
+        $crate::__register_enum!($vis $ename : $ty { $($ebody)* });
+    };
+    // Exclusive range, more follow
+    ($vis:vis, $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as enum $ename:ident { $($ebody:tt)* } , $($rest:tt)*
+    }) => {
+        $crate::__register_enum!($vis $ename : $ty { $($ebody)* });
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    // Exclusive range, last
+    ($vis:vis, $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as enum $ename:ident { $($ebody:tt)* }
+    }) => {
+        $crate::__register_enum!($vis $ename : $ty { $($ebody)* });
+    };
+    // Single bit, more follow
+    ($vis:vis, $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $bit:tt as enum $ename:ident { $($ebody:tt)* } , $($rest:tt)*
+    }) => {
+        $crate::__register_enum!($vis $ename : $ty { $($ebody)* });
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    // Single bit, last
+    ($vis:vis, $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $bit:tt as enum $ename:ident { $($ebody:tt)* }
+    }) => {
+        $crate::__register_enum!($vis $ename : $ty { $($ebody)* });
+    };
+
+    // ── as bool — skip ──────────────────────────────────────────────────
+
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as bool , $($rest:tt)* }) => {
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as bool }) => {};
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as bool , $($rest:tt)* }) => {
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as bool }) => {};
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $bit:tt as bool , $($rest:tt)* }) => {
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $bit:tt as bool }) => {};
+
+    // ── as $cast_ty — skip ──────────────────────────────────────────────
+
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as $cast_ty:ty , $($rest:tt)* }) => {
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as $cast_ty:ty }) => {};
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as $cast_ty:ty , $($rest:tt)* }) => {
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as $cast_ty:ty }) => {};
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $bit:tt as $cast_ty:ty , $($rest:tt)* }) => {
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $bit:tt as $cast_ty:ty }) => {};
+
+    // ── untyped (raw) — skip ────────────────────────────────────────────
+
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt , $($rest:tt)* }) => {
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt }) => {};
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt , $($rest:tt)* }) => {
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt }) => {};
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $bit:tt , $($rest:tt)* }) => {
+        $crate::__register_extract_enums!($vis, $ty { $($rest)* });
+    };
+    ($vis:vis, $ty:ty { $(#[$fmeta:meta])* $field:ident : $bit:tt }) => {};
 }
 
 /// Internal macro: bounds-check each register offset inside `new()`.
@@ -534,6 +760,116 @@ macro_rules! __register_bitfields {
     // Empty — no bitfields
     ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {}) => {};
 
+    // ── as bool ──────────────────────────────────────────────────────────
+
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as bool , $($rest:tt)*
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, $hi, @bool);
+        $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as bool
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, $hi, @bool);
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as bool , $($rest:tt)*
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, ($hi - 1), @bool);
+        $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as bool
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, ($hi - 1), @bool);
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $bit:tt as bool , $($rest:tt)*
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $bit, $bit, @bool);
+        $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $bit:tt as bool
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $bit, $bit, @bool);
+    };
+
+    // ── as enum ──────────────────────────────────────────────────────────
+
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as enum $ename:ident { $($ebody:tt)* } , $($rest:tt)*
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, $hi, @enum $ename);
+        $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as enum $ename:ident { $($ebody:tt)* }
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, $hi, @enum $ename);
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as enum $ename:ident { $($ebody:tt)* } , $($rest:tt)*
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, ($hi - 1), @enum $ename);
+        $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as enum $ename:ident { $($ebody:tt)* }
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, ($hi - 1), @enum $ename);
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $bit:tt as enum $ename:ident { $($ebody:tt)* } , $($rest:tt)*
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $bit, $bit, @enum $ename);
+        $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $bit:tt as enum $ename:ident { $($ebody:tt)* }
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $bit, $bit, @enum $ename);
+    };
+
+    // ── as cast type ─────────────────────────────────────────────────────
+
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as $cast_ty:ty , $($rest:tt)*
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, $hi, @cast $cast_ty);
+        $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt as $cast_ty:ty
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, $hi, @cast $cast_ty);
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as $cast_ty:ty , $($rest:tt)*
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, ($hi - 1), @cast $cast_ty);
+        $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt as $cast_ty:ty
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, ($hi - 1), @cast $cast_ty);
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $bit:tt as $cast_ty:ty , $($rest:tt)*
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $bit, $bit, @cast $cast_ty);
+        $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
+    };
+    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
+        $(#[$fmeta:meta])* $field:ident : $bit:tt as $cast_ty:ty
+    }) => {
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $bit, $bit, @cast $cast_ty);
+    };
+
+    // ── untyped (raw) ────────────────────────────────────────────────────
+
     // Multi-bit field (lo..=hi), more follow
     ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
         $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt , $($rest:tt)*
@@ -582,21 +918,60 @@ macro_rules! __register_bitfields {
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __register_one_bitfield {
-    // Read-write: getter + setter
+    // ── untyped (raw) dispatch ───────────────────────────────────────────
+
     ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => rw $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
         $crate::__register_one_bitfield!(@getter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
         $crate::__register_one_bitfield!(@setter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
     };
-    // Read-only: getter only
     ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => ro $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
         $crate::__register_one_bitfield!(@getter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
     };
-    // Write-only: setter only
     ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => wo $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
         $crate::__register_one_bitfield!(@setter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
     };
 
-    // Getter: always returns $ty (extract bits lo..=hi)
+    // ── bool dispatch ────────────────────────────────────────────────────
+
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => rw $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, @bool) => {
+        $crate::__register_one_bitfield!(@bool_getter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
+        $crate::__register_one_bitfield!(@bool_setter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
+    };
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => ro $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, @bool) => {
+        $crate::__register_one_bitfield!(@bool_getter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
+    };
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => wo $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, @bool) => {
+        $crate::__register_one_bitfield!(@bool_setter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
+    };
+
+    // ── cast dispatch ────────────────────────────────────────────────────
+
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => rw $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, @cast $cast_ty:ty) => {
+        $crate::__register_one_bitfield!(@cast_getter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi, $cast_ty);
+        $crate::__register_one_bitfield!(@cast_setter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi, $cast_ty);
+    };
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => ro $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, @cast $cast_ty:ty) => {
+        $crate::__register_one_bitfield!(@cast_getter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi, $cast_ty);
+    };
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => wo $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, @cast $cast_ty:ty) => {
+        $crate::__register_one_bitfield!(@cast_setter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi, $cast_ty);
+    };
+
+    // ── enum dispatch ────────────────────────────────────────────────────
+
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => rw $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, @enum $ename:ident) => {
+        $crate::__register_one_bitfield!(@enum_getter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi, $ename);
+        $crate::__register_one_bitfield!(@enum_setter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi, $ename);
+    };
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => ro $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, @enum $ename:ident) => {
+        $crate::__register_one_bitfield!(@enum_getter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi, $ename);
+    };
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => wo $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, @enum $ename:ident) => {
+        $crate::__register_one_bitfield!(@enum_setter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi, $ename);
+    };
+
+    // ── raw getter / setter ──────────────────────────────────────────────
+
     (@getter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
         $crate::__concat_idents!(fn_name = $reg, _, $field, {
             $(#[$fmeta])*
@@ -610,7 +985,6 @@ macro_rules! __register_one_bitfield {
         });
     };
 
-    // Setter: accepts $ty, does read-modify-write to set bits lo..=hi
     (@setter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
         $crate::__concat_idents!(fn_name = set_, $reg, _, $field, {
             $(#[$fmeta])*
@@ -626,6 +1000,152 @@ macro_rules! __register_one_bitfield {
                 }
             }
         });
+    };
+
+    // ── bool getter / setter ─────────────────────────────────────────────
+
+    (@bool_getter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
+        $crate::__concat_idents!(fn_name = $reg, _, $field, {
+            $(#[$fmeta])*
+            #[inline(always)]
+            $vis fn fn_name(&self) -> bool {
+                let raw = unsafe { std::ptr::read_volatile(self.devmem.as_ptr().add($offset) as *const $bus) } as $ty;
+                let width: u32 = ($hi) - ($lo) + 1;
+                let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
+                ((raw >> ($lo)) & mask) != 0
+            }
+        });
+    };
+
+    (@bool_setter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
+        $crate::__concat_idents!(fn_name = set_, $reg, _, $field, {
+            $(#[$fmeta])*
+            #[inline(always)]
+            $vis fn fn_name(&mut self, value: bool) {
+                let value = value as $ty;
+                let width: u32 = ($hi) - ($lo) + 1;
+                let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
+                unsafe {
+                    let ptr = self.devmem.as_ptr().add($offset);
+                    let old = std::ptr::read_volatile(ptr as *const $bus) as $ty;
+                    let new = (old & !(mask << ($lo))) | ((value & mask) << ($lo));
+                    std::ptr::write_volatile(ptr as *mut $bus, new as $bus);
+                }
+            }
+        });
+    };
+
+    // ── cast getter / setter ─────────────────────────────────────────────
+
+    (@cast_getter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, $cast_ty:ty) => {
+        $crate::__concat_idents!(fn_name = $reg, _, $field, {
+            $(#[$fmeta])*
+            #[inline(always)]
+            $vis fn fn_name(&self) -> $cast_ty {
+                let raw = unsafe { std::ptr::read_volatile(self.devmem.as_ptr().add($offset) as *const $bus) } as $ty;
+                let width: u32 = ($hi) - ($lo) + 1;
+                let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
+                ((raw >> ($lo)) & mask) as $cast_ty
+            }
+        });
+    };
+
+    (@cast_setter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, $cast_ty:ty) => {
+        $crate::__concat_idents!(fn_name = set_, $reg, _, $field, {
+            $(#[$fmeta])*
+            #[inline(always)]
+            $vis fn fn_name(&mut self, value: $cast_ty) {
+                let value = value as $ty;
+                let width: u32 = ($hi) - ($lo) + 1;
+                let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
+                unsafe {
+                    let ptr = self.devmem.as_ptr().add($offset);
+                    let old = std::ptr::read_volatile(ptr as *const $bus) as $ty;
+                    let new = (old & !(mask << ($lo))) | ((value & mask) << ($lo));
+                    std::ptr::write_volatile(ptr as *mut $bus, new as $bus);
+                }
+            }
+        });
+    };
+
+    // ── enum getter / setter ─────────────────────────────────────────────
+
+    (@enum_getter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, $ename:ident) => {
+        $crate::__concat_idents!(fn_name = $reg, _, $field, {
+            $(#[$fmeta])*
+            #[inline(always)]
+            $vis fn fn_name(&self) -> $ename {
+                let raw = unsafe { std::ptr::read_volatile(self.devmem.as_ptr().add($offset) as *const $bus) } as $ty;
+                let width: u32 = ($hi) - ($lo) + 1;
+                let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
+                $ename::from_raw((raw >> ($lo)) & mask)
+            }
+        });
+    };
+
+    (@enum_setter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, $ename:ident) => {
+        $crate::__concat_idents!(fn_name = set_, $reg, _, $field, {
+            $(#[$fmeta])*
+            #[inline(always)]
+            $vis fn fn_name(&mut self, value: $ename) {
+                let value = value.to_raw();
+                let width: u32 = ($hi) - ($lo) + 1;
+                let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
+                unsafe {
+                    let ptr = self.devmem.as_ptr().add($offset);
+                    let old = std::ptr::read_volatile(ptr as *const $bus) as $ty;
+                    let new = (old & !(mask << ($lo))) | ((value & mask) << ($lo));
+                    std::ptr::write_volatile(ptr as *mut $bus, new as $bus);
+                }
+            }
+        });
+    };
+}
+
+/// Internal macro: generate an enum from bitfield variant definitions.
+///
+/// Produces a `#[derive(Debug, Clone, Copy, PartialEq, Eq)]` enum with
+/// `from_raw()` / `to_raw()` conversion methods.
+#[cfg(feature = "register-map")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __register_enum {
+    ($vis:vis $ename:ident : $ty:ty { $($variant:ident = $val:expr),* $(,)? }) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        $vis enum $ename {
+            $($variant,)*
+        }
+
+        impl $ename {
+            /// Convert from a raw register value.
+            ///
+            /// Unknown values map to the first declared variant.
+            #[inline]
+            #[allow(unreachable_patterns)]
+            pub fn from_raw(v: $ty) -> Self {
+                match v {
+                    $($val => Self::$variant,)*
+                    _ => {
+                        let _variants = [$(Self::$variant,)*];
+                        _variants[0]
+                    }
+                }
+            }
+
+            /// Convert to raw register value.
+            #[inline]
+            pub fn to_raw(self) -> $ty {
+                match self {
+                    $(Self::$variant => $val as $ty,)*
+                }
+            }
+        }
+
+        impl std::fmt::Display for $ename {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Debug::fmt(self, f)
+            }
+        }
     };
 }
 
