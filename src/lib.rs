@@ -78,7 +78,7 @@ pub mod web;
 
 #[cfg(feature = "register-map")]
 #[doc(hidden)]
-pub use concat_idents::concat_idents as __concat_idents;
+pub use paste::paste as __paste;
 
 /// Declares a named register map backed by a [`DevMem`] instance.
 ///
@@ -1008,23 +1008,23 @@ macro_rules! __register_one_bitfield {
     // ── raw getter / setter ──────────────────────────────────────────────
 
     (@getter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
-        $crate::__concat_idents!(fn_name = $reg, _, $field, {
+        $crate::__paste! {
             $(#[$fmeta])*
             #[inline(always)]
-            $vis fn fn_name(&self) -> $ty {
+            $vis fn [<$reg _ $field>](&self) -> $ty {
                 let raw = unsafe { std::ptr::read_volatile(self.devmem.as_ptr().add($offset) as *const $bus) } as $ty;
                 let width: u32 = ($hi) - ($lo) + 1;
                 let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
                 (raw >> ($lo)) & mask
             }
-        });
+        }
     };
 
     (@setter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
-        $crate::__concat_idents!(fn_name = set_, $reg, _, $field, {
+        $crate::__paste! {
             $(#[$fmeta])*
             #[inline(always)]
-            $vis fn fn_name(&mut self, value: $ty) {
+            $vis fn [<set_ $reg _ $field>](&mut self, value: $ty) {
                 let width: u32 = ($hi) - ($lo) + 1;
                 let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
                 unsafe {
@@ -1034,29 +1034,29 @@ macro_rules! __register_one_bitfield {
                     std::ptr::write_volatile(ptr as *mut $bus, new as $bus);
                 }
             }
-        });
+        }
     };
 
     // ── bool getter / setter ─────────────────────────────────────────────
 
     (@bool_getter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
-        $crate::__concat_idents!(fn_name = $reg, _, $field, {
+        $crate::__paste! {
             $(#[$fmeta])*
             #[inline(always)]
-            $vis fn fn_name(&self) -> bool {
+            $vis fn [<$reg _ $field>](&self) -> bool {
                 let raw = unsafe { std::ptr::read_volatile(self.devmem.as_ptr().add($offset) as *const $bus) } as $ty;
                 let width: u32 = ($hi) - ($lo) + 1;
                 let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
                 ((raw >> ($lo)) & mask) != 0
             }
-        });
+        }
     };
 
     (@bool_setter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
-        $crate::__concat_idents!(fn_name = set_, $reg, _, $field, {
+        $crate::__paste! {
             $(#[$fmeta])*
             #[inline(always)]
-            $vis fn fn_name(&mut self, value: bool) {
+            $vis fn [<set_ $reg _ $field>](&mut self, value: bool) {
                 let value = value as $ty;
                 let width: u32 = ($hi) - ($lo) + 1;
                 let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
@@ -1067,29 +1067,29 @@ macro_rules! __register_one_bitfield {
                     std::ptr::write_volatile(ptr as *mut $bus, new as $bus);
                 }
             }
-        });
+        }
     };
 
     // ── cast getter / setter ─────────────────────────────────────────────
 
     (@cast_getter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, $cast_ty:ty) => {
-        $crate::__concat_idents!(fn_name = $reg, _, $field, {
+        $crate::__paste! {
             $(#[$fmeta])*
             #[inline(always)]
-            $vis fn fn_name(&self) -> $cast_ty {
+            $vis fn [<$reg _ $field>](&self) -> $cast_ty {
                 let raw = unsafe { std::ptr::read_volatile(self.devmem.as_ptr().add($offset) as *const $bus) } as $ty;
                 let width: u32 = ($hi) - ($lo) + 1;
                 let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
                 ((raw >> ($lo)) & mask) as $cast_ty
             }
-        });
+        }
     };
 
     (@cast_setter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, $cast_ty:ty) => {
-        $crate::__concat_idents!(fn_name = set_, $reg, _, $field, {
+        $crate::__paste! {
             $(#[$fmeta])*
             #[inline(always)]
-            $vis fn fn_name(&mut self, value: $cast_ty) {
+            $vis fn [<set_ $reg _ $field>](&mut self, value: $cast_ty) {
                 let value = value as $ty;
                 let width: u32 = ($hi) - ($lo) + 1;
                 let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
@@ -1100,29 +1100,29 @@ macro_rules! __register_one_bitfield {
                     std::ptr::write_volatile(ptr as *mut $bus, new as $bus);
                 }
             }
-        });
+        }
     };
 
     // ── enum getter / setter ─────────────────────────────────────────────
 
     (@enum_getter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, $ename:ident) => {
-        $crate::__concat_idents!(fn_name = $reg, _, $field, {
+        $crate::__paste! {
             $(#[$fmeta])*
             #[inline(always)]
-            $vis fn fn_name(&self) -> $ename {
+            $vis fn [<$reg _ $field>](&self) -> $ename {
                 let raw = unsafe { std::ptr::read_volatile(self.devmem.as_ptr().add($offset) as *const $bus) } as $ty;
                 let width: u32 = ($hi) - ($lo) + 1;
                 let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
                 $ename::from_raw((raw >> ($lo)) & mask)
             }
-        });
+        }
     };
 
     (@enum_setter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr, $ename:ident) => {
-        $crate::__concat_idents!(fn_name = set_, $reg, _, $field, {
+        $crate::__paste! {
             $(#[$fmeta])*
             #[inline(always)]
-            $vis fn fn_name(&mut self, value: $ename) {
+            $vis fn [<set_ $reg _ $field>](&mut self, value: $ename) {
                 let value = value.to_raw();
                 let width: u32 = ($hi) - ($lo) + 1;
                 let mask: $ty = if width >= <$ty>::BITS { <$ty>::MAX } else { (1 << width) - 1 };
@@ -1133,7 +1133,7 @@ macro_rules! __register_one_bitfield {
                     std::ptr::write_volatile(ptr as *mut $bus, new as $bus);
                 }
             }
-        });
+        }
     };
 }
 
@@ -1189,21 +1189,19 @@ macro_rules! __register_enum {
 #[doc(hidden)]
 macro_rules! __register_methods {
     ($vis: vis reg base $offset: expr => $name: ident : $ty: ty) => {
-        $crate::__concat_idents!(fn_name = $name, _offset, {
+        $crate::__paste! {
             /// Returns the offset of the register within the DevMem.
             #[inline(always)]
-            $vis fn fn_name(&self) -> usize {
+            $vis fn [<$name _offset>](&self) -> usize {
                 $offset
             }
-        });
 
-        $crate::__concat_idents!(fn_name = $name, _address, {
             /// Returns the address of the register.
             #[inline(always)]
-            $vis fn fn_name(&self) -> usize {
+            $vis fn [<$name _address>](&self) -> usize {
                 self.devmem.address() + $offset
             }
-        });
+        }
     };
     ($vis: vis reg($bus: ty) read [$(#[$meta:meta])*] $offset: expr => $name: ident : $ty: ty) => {
         $(#[$meta])*
@@ -1213,25 +1211,25 @@ macro_rules! __register_methods {
         }
     };
     ($vis: vis reg($bus: ty) write [$(#[$meta:meta])*] $offset: expr => $name: ident : $ty: ty) => {
-        $crate::__concat_idents!(fn_name = set_, $name, {
+        $crate::__paste! {
             $(#[$meta])*
             #[inline(always)]
-            $vis fn fn_name(&mut self, value: $ty) {
+            $vis fn [<set_ $name>](&mut self, value: $ty) {
                 unsafe { std::ptr::write_volatile(self.devmem.as_ptr().add($offset) as *mut $bus, value as $bus) }
             }
-        });
+        }
     };
     ($vis: vis reg($bus: ty) modify [$(#[$meta:meta])*] $offset: expr => $name: ident : $ty: ty) => {
-        $crate::__concat_idents!(fn_name = modify_, $name, {
+        $crate::__paste! {
             $(#[$meta])*
             #[inline(always)]
-            $vis fn fn_name(&mut self, f: impl FnOnce($ty) -> $ty) {
+            $vis fn [<modify_ $name>](&mut self, f: impl FnOnce($ty) -> $ty) {
                 unsafe {
                     let ptr = self.devmem.as_ptr().add($offset);
                     let val = std::ptr::read_volatile(ptr as *const $bus) as $ty;
                     std::ptr::write_volatile(ptr as *mut $bus, f(val) as $bus);
                 }
             }
-        });
+        }
     }
 }

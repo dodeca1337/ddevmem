@@ -7,13 +7,13 @@ with volatile read/write semantics suitable for memory-mapped I/O (MMIO).
 
 ## Features
 
-| Feature        | Default | Description                                                      |
-| -------------- | ------- | ---------------------------------------------------------------- |
-| `device`       | ✓       | Real `/dev/mem` backend via `memmap2`.                           |
-| `emulator`     |         | Heap-backed `Vec<u8>` for testing without hardware.              |
-| `reg`          |         | Typed `Reg<T>` / `SliceReg<T>` register handles.                 |
+| Feature        | Default | Description                                                                    |
+| -------------- | ------- | ------------------------------------------------------------------------------ |
+| `device`       | ✓       | Real `/dev/mem` backend via `memmap2`.                                         |
+| `emulator`     |         | Heap-backed `Vec<u8>` for testing without hardware.                            |
+| `reg`          |         | Typed `Reg<T>` / `SliceReg<T>` register handles.                               |
 | `register-map` | ✓       | Declarative `register_map!` macro with optional bitfields and typed accessors. |
-| `web`          |         | Web UI for viewing/editing registers via `axum` (optional auth). |
+| `web`          |         | Web UI for viewing/editing registers via `axum` (optional auth).               |
 
 > **Note:** enable exactly one of `device` or `emulator`. Enabling both is a compile error.
 
@@ -516,7 +516,7 @@ assert_eq!(regs.ctrl_irq_en(), 0); // other bits untouched
 | No bitfield support                 | `register_map!` with bitfields     |
 | No bus-width control                | `register_map!(… (u32) { … })`     |
 | No doc comment support              | `/// …` on registers & bitfields   |
-| No typed bitfield support           | `as bool` / `as u8` / `as enum`   |
+| No typed bitfield support           | `as bool` / `as u8` / `as enum`    |
 | No web UI                           | `web` feature with `axum` server   |
 
 ## License
