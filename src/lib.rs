@@ -10,7 +10,8 @@
 //! - [`Reg`](reg::Reg) / [`SliceReg`](reg::SliceReg) — typed register handles
 //!   with compile-time read/write control (requires the `reg` feature).
 //! - [`register_map!`] — declarative macro for defining named register maps
-//!   with optional bus-width enforcement and bitfield accessors (requires the
+//!   with optional bus-width enforcement, bitfield accessors, and typed
+//!   bitfields (`as bool` / `as u8` / `as enum`) (requires the
 //!   `register-map` feature).
 //!
 //! ## Feature flags
@@ -20,7 +21,7 @@
 //! | `device`         | yes     | Real `/dev/mem` backend via `memmap2`. |
 //! | `emulator`       | no      | In-memory `Vec<u8>` backend for testing without hardware. |
 //! | `reg`            | no      | [`Reg`](reg::Reg) and [`SliceReg`](reg::SliceReg) types. |
-//! | `register-map`   | yes     | [`register_map!`] macro (pulls in `concat-idents`). |
+//! | `register-map`   | yes     | [`register_map!`] macro with bitfields and typed accessors. |
 //! | `web`            | no      | Web UI for viewing/editing registers via [`axum`]. |
 //!
 //! Enable exactly one of `device` or `emulator`. Both enabled simultaneously is
@@ -98,6 +99,18 @@ pub use concat_idents::concat_idents as __concat_idents;
 /// are left untouched during read-modify-write — there is no need to declare
 /// reserved gaps.
 ///
+/// ## Typed bitfields
+///
+/// A bitfield can carry an `as <type>` suffix to change the getter/setter
+/// types:
+///
+/// - `field: bit as bool` — getter returns `bool`, setter accepts `bool`.
+/// - `field: lo..=hi as u8` — getter returns `u8`, setter accepts `u8`
+///   (any integer type is supported).
+/// - `field: lo..=hi as enum Name { Variant = value, ... }` — generates a
+///   `#[derive(Debug, Clone, Copy, PartialEq, Eq)]` enum with `from_raw()`
+///   and `to_raw()` methods. Unknown raw values map to the first variant.
+///
 /// # Generated API
 ///
 /// For a register named `ctrl` the following methods are generated:
@@ -117,6 +130,8 @@ pub use concat_idents::concat_idents as __concat_idents;
 /// | `rw` / `ro` | `ctrl_enable()` | `fn(&self) -> T` |
 /// | `rw` / `wo` | `set_ctrl_enable(value)` | `fn(&mut self, T)` |
 ///
+/// When a type suffix is present, `T` becomes the specified type (`bool`,
+/// `u8`, or the generated enum).
 /// # Safety
 ///
 /// The macro-generated `new()` is `unsafe` because [`DevMem`] does not track
@@ -181,6 +196,26 @@ pub use concat_idents::concat_idents as __concat_idents;
 ///         0x00 => rw data:   u32,
 ///         0x04 => ro status: u32,
 ///         0x08 => wo cmd:    u32
+///     }
+/// }
+/// ```
+///
+/// With typed bitfields:
+///
+/// ```rust,no_run
+/// # use ddevmem::register_map;
+/// register_map! {
+///     pub unsafe map Timer (u32) {
+///         0x00 => rw cr: u32 {
+///             enable: 0 as bool,
+///             psc:    2..=5 as u8,
+///             mode:   6..=7 as enum TimerMode {
+///                 Stopped  = 0,
+///                 OneShot  = 1,
+///                 FreeRun  = 2,
+///                 External = 3,
+///             },
+///         }
 ///     }
 /// }
 /// ```

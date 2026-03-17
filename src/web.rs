@@ -4,6 +4,9 @@
 //! interface for any type that implements [`RegisterMapInfo`] (automatically
 //! derived by [`register_map!`]).
 //!
+//! Typed bitfields (`as bool`, `as enum`) are rendered as dropdown selectors
+//! in the web UI instead of plain numeric inputs.
+//!
 //! The returned [`Router`] has **no root path baked in**, so it can be nested
 //! freely under any prefix with [`Router::nest`].
 //!

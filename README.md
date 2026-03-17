@@ -12,7 +12,7 @@ with volatile read/write semantics suitable for memory-mapped I/O (MMIO).
 | `device`       | ✓       | Real `/dev/mem` backend via `memmap2`.                           |
 | `emulator`     |         | Heap-backed `Vec<u8>` for testing without hardware.              |
 | `reg`          |         | Typed `Reg<T>` / `SliceReg<T>` register handles.                 |
-| `register-map` | ✓       | Declarative `register_map!` macro with optional bitfields.       |
+| `register-map` | ✓       | Declarative `register_map!` macro with optional bitfields and typed accessors. |
 | `web`          |         | Web UI for viewing/editing registers via `axum` (optional auth). |
 
 > **Note:** enable exactly one of `device` or `emulator`. Enabling both is a compile error.
@@ -97,6 +97,48 @@ let enabled: u32 = regs.control_enable();  // single-bit → value from bit 0
 let mode: u32    = regs.control_mode();     // bits 1..=3
 
 regs.set_control_mode(0b101);              // read-modify-write only the mode bits
+```
+
+### Typed bitfields
+
+Bitfields can carry an `as <type>` suffix to change the getter/setter types.
+Three forms are supported: `as bool`, `as <integer>`, and `as enum`.
+
+```rust,no_run
+use std::sync::Arc;
+use ddevmem::{register_map, DevMem};
+
+register_map! {
+    /// Timer controller with typed bitfields.
+    pub unsafe map TimerRegs (u32) {
+        0x00 =>
+            /// Control register.
+            rw cr: u32 {
+                /// Enable flag.
+                enable: 0 as bool,
+                /// Prescaler (0–15).
+                psc: 2..=5 as u8,
+                /// Operating mode.
+                mode: 6..=7 as enum TimerMode {
+                    Stopped  = 0,
+                    OneShot  = 1,
+                    FreeRun  = 2,
+                    External = 3,
+                },
+            }
+    }
+}
+
+let devmem = unsafe { DevMem::new(0x4000_0000, None).unwrap() };
+let mut timer = unsafe { TimerRegs::new(Arc::new(devmem)).unwrap() };
+
+timer.set_cr_enable(true);            // bool
+timer.set_cr_psc(7);                  // u8
+timer.set_cr_mode(TimerMode::FreeRun); // enum
+
+assert_eq!(timer.cr_enable(), true);
+assert_eq!(timer.cr_psc(), 7u8);
+assert_eq!(timer.cr_mode(), TimerMode::FreeRun);
 ```
 
 ### Documented register map
@@ -196,6 +238,17 @@ field_name: lo..=hi         // inclusive range (recommended)
 field_name: lo..hi          // exclusive upper bound (Rust convention)
 ```
 
+A bitfield can carry an `as <type>` suffix to produce typed getters/setters:
+
+```text
+field: bit        as bool              // getter → bool, setter accepts bool
+field: lo..=hi    as u8                // getter → u8,   setter accepts u8 (any int type)
+field: lo..=hi    as enum Name {       // getter → Name, setter accepts Name
+    Variant = value,                   //   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    ...,                               //   with from_raw() / to_raw() methods
+}
+```
+
 Bits not covered by any field declaration are left untouched during
 read-modify-write — there is no need to declare reserved gaps.
 
@@ -215,6 +268,15 @@ read-modify-write — there is no need to declare reserved gaps.
 | ----------- | ---------------------- | -------------------------------------- |
 | `rw` / `ro` | `reg_field()`          | Extract field bits.                    |
 | `rw` / `wo` | `set_reg_field(value)` | Read-modify-write only the field bits. |
+
+When a type suffix is present the return / argument type changes accordingly:
+
+| Suffix         | Getter returns | Setter accepts |
+| -------------- | -------------- | -------------- |
+| *(none)*       | register type  | register type  |
+| `as bool`      | `bool`         | `bool`         |
+| `as u8` (etc.) | `u8`           | `u8`           |
+| `as enum Name` | `Name`         | `Name`         |
 
 ### Typed registers (`reg` feature)
 
@@ -454,6 +516,7 @@ assert_eq!(regs.ctrl_irq_en(), 0); // other bits untouched
 | No bitfield support                 | `register_map!` with bitfields     |
 | No bus-width control                | `register_map!(… (u32) { … })`     |
 | No doc comment support              | `/// …` on registers & bitfields   |
+| No typed bitfield support           | `as bool` / `as u8` / `as enum`   |
 | No web UI                           | `web` feature with `axum` server   |
 
 ## License
