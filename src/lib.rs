@@ -21,6 +21,7 @@
 //! | `emulator`       | no      | In-memory `Vec<u8>` backend for testing without hardware. |
 //! | `reg`            | no      | [`Reg`](reg::Reg) and [`SliceReg`](reg::SliceReg) types. |
 //! | `register-map`   | yes     | [`register_map!`] macro (pulls in `concat-idents`). |
+//! | `web`            | no      | Web UI for viewing/editing registers via [`axum`]. |
 //!
 //! Enable exactly one of `device` or `emulator`. Both enabled simultaneously is
 //! a compile error.
@@ -71,6 +72,9 @@ pub use devmem::{DevMem, Error};
 #[cfg(all(feature = "reg", any(feature = "device", feature = "emulator")))]
 pub mod reg;
 
+#[cfg(feature = "web")]
+pub mod web;
+
 #[cfg(feature = "register-map")]
 #[doc(hidden)]
 pub use concat_idents::concat_idents as __concat_idents;
@@ -119,6 +123,33 @@ pub use concat_idents::concat_idents as __concat_idents;
 /// which regions are claimed by register maps. The caller must ensure no
 /// overlapping maps alias the same memory.
 ///
+/// # Documentation
+///
+/// Doc comments (`/// ...`) can be placed on the register map struct itself,
+/// on individual registers (after `=>`), and on individual bitfields.
+/// They are forwarded to the generated methods and, when the `web` feature
+/// is enabled, displayed in the web UI.
+///
+/// ```rust,no_run
+/// # use ddevmem::register_map;
+/// register_map! {
+///     /// My peripheral.
+///     pub unsafe map MyRegs (u32) {
+///         0x00 =>
+///             /// Control register
+///             rw control: u32 {
+///                 /// Enable the peripheral
+///                 enable: 0,
+///                 /// Operating mode (0-7)
+///                 mode: 1..=3
+///             },
+///         0x04 =>
+///             /// Status register (read-only)
+///             ro status: u32
+///     }
+/// }
+/// ```
+///
 /// # Examples
 ///
 /// With explicit bus width (recommended for FPGA / AXI-Lite):
@@ -157,7 +188,8 @@ pub use concat_idents::concat_idents as __concat_idents;
 #[macro_export]
 macro_rules! register_map {
     // With bus width
-    ($vis: vis unsafe map $name: ident ($bus: ty) { $($tt:tt)+ }) => {
+    ($(#[$struct_meta:meta])* $vis: vis unsafe map $name: ident ($bus: ty) { $($tt:tt)+ }) => {
+        $(#[$struct_meta])*
         $vis struct $name {
             devmem: std::sync::Arc<$crate::DevMem>,
         }
@@ -183,11 +215,229 @@ macro_rules! register_map {
 
         unsafe impl Sync for $name {}
         unsafe impl Send for $name {}
+
+        $crate::__register_map_web_impl!($name ($bus) $($tt)+);
     };
 
     // Without bus width — defaults to usize (native word width)
-    ($vis: vis unsafe map $name: ident { $($tt:tt)+ }) => {
-        $crate::register_map!($vis unsafe map $name (usize) { $($tt)+ });
+    ($(#[$struct_meta:meta])* $vis: vis unsafe map $name: ident { $($tt:tt)+ }) => {
+        $crate::register_map!($(#[$struct_meta])* $vis unsafe map $name (usize) { $($tt)+ });
+    };
+}
+
+/// Internal macro: generate `RegisterMapInfo` when `web` feature is active.
+/// When `web` is not enabled this expands to nothing.
+#[cfg(all(feature = "register-map", feature = "web"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __register_map_web_impl {
+    ($name:ident ($bus:ty) $($tt:tt)+) => {
+        impl $crate::web::RegisterMapInfo for $name {
+            fn map_name(&self) -> &'static str {
+                stringify!($name)
+            }
+
+            fn bus_width(&self) -> usize {
+                std::mem::size_of::<$bus>()
+            }
+
+            fn base_address(&self) -> usize {
+                self.devmem.address()
+            }
+
+            fn registers(&self) -> Vec<$crate::web::RegisterInfo> {
+                let mut regs = Vec::new();
+                $crate::__register_map_collect_info!(regs ($bus) $($tt)+);
+                regs
+            }
+
+            fn read_register(&self, offset: usize) -> Option<u64> {
+                self.devmem.read::<$bus>(offset).map(|v| v as u64)
+            }
+
+            fn write_register(&mut self, offset: usize, value: u64) -> Option<()> {
+                self.devmem.write::<$bus>(offset, value as $bus)
+            }
+        }
+    };
+}
+
+#[cfg(all(feature = "register-map", not(feature = "web")))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __register_map_web_impl {
+    ($name:ident ($bus:ty) $($tt:tt)+) => {};
+}
+
+/// Internal macro: collect register metadata for the web UI.
+#[cfg(feature = "web")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __register_map_collect_info {
+    // Entry with bitfields, more entries follow
+    ($regs:ident ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty { $($fields:tt)* } , $($rest:tt)+) => {
+        {
+            let mut bitfields = Vec::new();
+            $crate::__register_collect_bitfields!(bitfields $($fields)*);
+            let doc = $crate::__extract_doc_str!($(#[$meta])*);
+            $regs.push($crate::web::RegisterInfo {
+                name: stringify!($name),
+                doc,
+                offset: $offset,
+                access: stringify!($kind),
+                width: std::mem::size_of::<$ty>() * 8,
+                bitfields,
+            });
+        }
+        $crate::__register_map_collect_info!($regs ($bus) $($rest)+);
+    };
+    // Entry with bitfields, last entry
+    ($regs:ident ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty { $($fields:tt)* }) => {
+        {
+            let mut bitfields = Vec::new();
+            $crate::__register_collect_bitfields!(bitfields $($fields)*);
+            let doc = $crate::__extract_doc_str!($(#[$meta])*);
+            $regs.push($crate::web::RegisterInfo {
+                name: stringify!($name),
+                doc,
+                offset: $offset,
+                access: stringify!($kind),
+                width: std::mem::size_of::<$ty>() * 8,
+                bitfields,
+            });
+        }
+    };
+    // Entry without bitfields, more entries follow
+    ($regs:ident ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty , $($rest:tt)+) => {
+        {
+            let doc = $crate::__extract_doc_str!($(#[$meta])*);
+            $regs.push($crate::web::RegisterInfo {
+                name: stringify!($name),
+                doc,
+                offset: $offset,
+                access: stringify!($kind),
+                width: std::mem::size_of::<$ty>() * 8,
+                bitfields: Vec::new(),
+            });
+        }
+        $crate::__register_map_collect_info!($regs ($bus) $($rest)+);
+    };
+    // Entry without bitfields, last entry
+    ($regs:ident ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty) => {
+        {
+            let doc = $crate::__extract_doc_str!($(#[$meta])*);
+            $regs.push($crate::web::RegisterInfo {
+                name: stringify!($name),
+                doc,
+                offset: $offset,
+                access: stringify!($kind),
+                width: std::mem::size_of::<$ty>() * 8,
+                bitfields: Vec::new(),
+            });
+        }
+    };
+}
+
+/// Internal macro: collect bitfield info for the web UI.
+#[cfg(feature = "web")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __register_collect_bitfields {
+    // empty
+    ($bf:ident) => {};
+
+    // Inclusive range, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt , $($rest:tt)*) => {
+        {
+            let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
+            $bf.push($crate::web::BitfieldInfo {
+                name: stringify!($field),
+                doc,
+                lo: $lo,
+                hi: $hi,
+            });
+        }
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Inclusive range, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt) => {
+        {
+            let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
+            $bf.push($crate::web::BitfieldInfo {
+                name: stringify!($field),
+                doc,
+                lo: $lo,
+                hi: $hi,
+            });
+        }
+    };
+
+    // Exclusive range, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt , $($rest:tt)*) => {
+        {
+            let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
+            $bf.push($crate::web::BitfieldInfo {
+                name: stringify!($field),
+                doc,
+                lo: $lo,
+                hi: $hi - 1,
+            });
+        }
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Exclusive range, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt) => {
+        {
+            let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
+            $bf.push($crate::web::BitfieldInfo {
+                name: stringify!($field),
+                doc,
+                lo: $lo,
+                hi: $hi - 1,
+            });
+        }
+    };
+
+    // Single bit, more follow
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt , $($rest:tt)*) => {
+        {
+            let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
+            $bf.push($crate::web::BitfieldInfo {
+                name: stringify!($field),
+                doc,
+                lo: $bit,
+                hi: $bit,
+            });
+        }
+        $crate::__register_collect_bitfields!($bf $($rest)*);
+    };
+    // Single bit, last
+    ($bf:ident $(#[$fmeta:meta])* $field:ident : $bit:tt) => {
+        {
+            let doc = $crate::__extract_doc_str!($(#[$fmeta])*);
+            $bf.push($crate::web::BitfieldInfo {
+                name: stringify!($field),
+                doc,
+                lo: $bit,
+                hi: $bit,
+            });
+        }
+    };
+}
+
+/// Internal macro: extract doc string from attributes.
+/// Concatenates all `#[doc = "..."]` attributes into a single `&'static str`.
+/// If no doc attributes, returns `""`.
+#[cfg(feature = "web")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __extract_doc_str {
+    () => { "" };
+    (#[doc = $doc:expr] $(#[$rest:meta])*) => {
+        concat!($doc, $crate::__extract_doc_str!($(#[$rest])*))
+    };
+    (#[$other:meta] $(#[$rest:meta])*) => {
+        $crate::__extract_doc_str!($(#[$rest])*)
     };
 }
 
@@ -197,19 +447,19 @@ macro_rules! register_map {
 #[doc(hidden)]
 macro_rules! __register_map_check {
     // Entry with bitfields — skip bitfield block, continue
-    (($bus: ty) $dv:ident $offset:expr => $kind:ident $name:ident : $ty:ty { $($fields:tt)* } , $($rest:tt)+) => {
+    (($bus: ty) $dv:ident $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty { $($fields:tt)* } , $($rest:tt)+) => {
         $crate::__register_map_check!(@one ($bus) $dv $offset ; $ty);
         $crate::__register_map_check!(($bus) $dv $($rest)+);
     };
-    (($bus: ty) $dv:ident $offset:expr => $kind:ident $name:ident : $ty:ty { $($fields:tt)* }) => {
+    (($bus: ty) $dv:ident $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty { $($fields:tt)* }) => {
         $crate::__register_map_check!(@one ($bus) $dv $offset ; $ty);
     };
     // Entry without bitfields
-    (($bus: ty) $dv:ident $offset:expr => $kind:ident $name:ident : $ty:ty , $($rest:tt)+) => {
+    (($bus: ty) $dv:ident $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty , $($rest:tt)+) => {
         $crate::__register_map_check!(@one ($bus) $dv $offset ; $ty);
         $crate::__register_map_check!(($bus) $dv $($rest)+);
     };
-    (($bus: ty) $dv:ident $offset:expr => $kind:ident $name:ident : $ty:ty) => {
+    (($bus: ty) $dv:ident $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty) => {
         $crate::__register_map_check!(@one ($bus) $dv $offset ; $ty);
     };
     (@one ($bus: ty) $dv:ident $offset:expr ; $ty:ty) => {
@@ -233,22 +483,22 @@ macro_rules! __register_map_check {
 #[doc(hidden)]
 macro_rules! __register_map_methods {
     // Entry with bitfields, more entries follow
-    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $name:ident : $ty:ty { $($fields:tt)* } , $($rest:tt)+) => {
-        $crate::__register_map_entry!($vis ($bus) $offset => $kind $name : $ty { $($fields)* });
+    ($vis:vis ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty { $($fields:tt)* } , $($rest:tt)+) => {
+        $crate::__register_map_entry!($vis ($bus) [$(#[$meta])*] $offset => $kind $name : $ty { $($fields)* });
         $crate::__register_map_methods!($vis ($bus) $($rest)+);
     };
     // Entry with bitfields, last entry
-    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $name:ident : $ty:ty { $($fields:tt)* }) => {
-        $crate::__register_map_entry!($vis ($bus) $offset => $kind $name : $ty { $($fields)* });
+    ($vis:vis ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty { $($fields:tt)* }) => {
+        $crate::__register_map_entry!($vis ($bus) [$(#[$meta])*] $offset => $kind $name : $ty { $($fields)* });
     };
     // Entry without bitfields, more entries follow
-    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $name:ident : $ty:ty , $($rest:tt)+) => {
-        $crate::__register_map_entry!($vis ($bus) $offset => $kind $name : $ty {});
+    ($vis:vis ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty , $($rest:tt)+) => {
+        $crate::__register_map_entry!($vis ($bus) [$(#[$meta])*] $offset => $kind $name : $ty {});
         $crate::__register_map_methods!($vis ($bus) $($rest)+);
     };
     // Entry without bitfields, last entry
-    ($vis:vis ($bus:ty) $offset:expr => $kind:ident $name:ident : $ty:ty) => {
-        $crate::__register_map_entry!($vis ($bus) $offset => $kind $name : $ty {});
+    ($vis:vis ($bus:ty) $offset:expr => $(#[$meta:meta])* $kind:ident $name:ident : $ty:ty) => {
+        $crate::__register_map_entry!($vis ($bus) [$(#[$meta])*] $offset => $kind $name : $ty {});
     };
 }
 
@@ -257,21 +507,21 @@ macro_rules! __register_map_methods {
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __register_map_entry {
-    ($vis:vis ($bus:ty) $offset:expr => rw $name:ident : $ty:ty { $($fields:tt)* }) => {
+    ($vis:vis ($bus:ty) [$(#[$meta:meta])*] $offset:expr => rw $name:ident : $ty:ty { $($fields:tt)* }) => {
         $crate::__register_methods!($vis reg base $offset => $name : $ty);
-        $crate::__register_methods!($vis reg($bus) read $offset => $name : $ty);
-        $crate::__register_methods!($vis reg($bus) write $offset => $name : $ty);
-        $crate::__register_methods!($vis reg($bus) modify $offset => $name : $ty);
+        $crate::__register_methods!($vis reg($bus) read [$(#[$meta])*] $offset => $name : $ty);
+        $crate::__register_methods!($vis reg($bus) write [$(#[$meta])*] $offset => $name : $ty);
+        $crate::__register_methods!($vis reg($bus) modify [$(#[$meta])*] $offset => $name : $ty);
         $crate::__register_bitfields!($vis ($bus) $offset => rw $name : $ty { $($fields)* });
     };
-    ($vis:vis ($bus:ty) $offset:expr => ro $name:ident : $ty:ty { $($fields:tt)* }) => {
+    ($vis:vis ($bus:ty) [$(#[$meta:meta])*] $offset:expr => ro $name:ident : $ty:ty { $($fields:tt)* }) => {
         $crate::__register_methods!($vis reg base $offset => $name : $ty);
-        $crate::__register_methods!($vis reg($bus) read $offset => $name : $ty);
+        $crate::__register_methods!($vis reg($bus) read [$(#[$meta])*] $offset => $name : $ty);
         $crate::__register_bitfields!($vis ($bus) $offset => ro $name : $ty { $($fields)* });
     };
-    ($vis:vis ($bus:ty) $offset:expr => wo $name:ident : $ty:ty { $($fields:tt)* }) => {
+    ($vis:vis ($bus:ty) [$(#[$meta:meta])*] $offset:expr => wo $name:ident : $ty:ty { $($fields:tt)* }) => {
         $crate::__register_methods!($vis reg base $offset => $name : $ty);
-        $crate::__register_methods!($vis reg($bus) write $offset => $name : $ty);
+        $crate::__register_methods!($vis reg($bus) write [$(#[$meta])*] $offset => $name : $ty);
         $crate::__register_bitfields!($vis ($bus) $offset => wo $name : $ty { $($fields)* });
     };
 }
@@ -286,44 +536,44 @@ macro_rules! __register_bitfields {
 
     // Multi-bit field (lo..=hi), more follow
     ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
-        $field:ident : $lo:tt ..= $hi:tt , $($rest:tt)*
+        $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt , $($rest:tt)*
     }) => {
-        $crate::__register_one_bitfield!($vis ($bus) $offset => $kind $reg : $ty, $field, $lo, $hi);
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, $hi);
         $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
     };
     // Multi-bit field (lo..=hi), last
     ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
-        $field:ident : $lo:tt ..= $hi:tt
+        $(#[$fmeta:meta])* $field:ident : $lo:tt ..= $hi:tt
     }) => {
-        $crate::__register_one_bitfield!($vis ($bus) $offset => $kind $reg : $ty, $field, $lo, $hi);
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, $hi);
     };
 
     // Multi-bit field (lo..hi exclusive), more follow
     ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
-        $field:ident : $lo:tt .. $hi:tt , $($rest:tt)*
+        $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt , $($rest:tt)*
     }) => {
-        $crate::__register_one_bitfield!($vis ($bus) $offset => $kind $reg : $ty, $field, $lo, ($hi - 1));
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, ($hi - 1));
         $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
     };
     // Multi-bit field (lo..hi exclusive), last
     ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
-        $field:ident : $lo:tt .. $hi:tt
+        $(#[$fmeta:meta])* $field:ident : $lo:tt .. $hi:tt
     }) => {
-        $crate::__register_one_bitfield!($vis ($bus) $offset => $kind $reg : $ty, $field, $lo, ($hi - 1));
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $lo, ($hi - 1));
     };
 
     // Single-bit field, more follow
     ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
-        $field:ident : $bit:tt , $($rest:tt)*
+        $(#[$fmeta:meta])* $field:ident : $bit:tt , $($rest:tt)*
     }) => {
-        $crate::__register_one_bitfield!($vis ($bus) $offset => $kind $reg : $ty, $field, $bit, $bit);
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $bit, $bit);
         $crate::__register_bitfields!($vis ($bus) $offset => $kind $reg : $ty { $($rest)* });
     };
     // Single-bit field, last
     ($vis:vis ($bus:ty) $offset:expr => $kind:ident $reg:ident : $ty:ty {
-        $field:ident : $bit:tt
+        $(#[$fmeta:meta])* $field:ident : $bit:tt
     }) => {
-        $crate::__register_one_bitfield!($vis ($bus) $offset => $kind $reg : $ty, $field, $bit, $bit);
+        $crate::__register_one_bitfield!($vis ($bus) [$(#[$fmeta])*] $offset => $kind $reg : $ty, $field, $bit, $bit);
     };
 }
 
@@ -333,23 +583,23 @@ macro_rules! __register_bitfields {
 #[doc(hidden)]
 macro_rules! __register_one_bitfield {
     // Read-write: getter + setter
-    ($vis:vis ($bus:ty) $offset:expr => rw $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
-        $crate::__register_one_bitfield!(@getter $vis ($bus) $offset => $reg : $ty, $field, $lo, $hi);
-        $crate::__register_one_bitfield!(@setter $vis ($bus) $offset => $reg : $ty, $field, $lo, $hi);
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => rw $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
+        $crate::__register_one_bitfield!(@getter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
+        $crate::__register_one_bitfield!(@setter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
     };
     // Read-only: getter only
-    ($vis:vis ($bus:ty) $offset:expr => ro $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
-        $crate::__register_one_bitfield!(@getter $vis ($bus) $offset => $reg : $ty, $field, $lo, $hi);
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => ro $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
+        $crate::__register_one_bitfield!(@getter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
     };
     // Write-only: setter only
-    ($vis:vis ($bus:ty) $offset:expr => wo $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
-        $crate::__register_one_bitfield!(@setter $vis ($bus) $offset => $reg : $ty, $field, $lo, $hi);
+    ($vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => wo $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
+        $crate::__register_one_bitfield!(@setter $vis ($bus) [$(#[$fmeta])*] $offset => $reg : $ty, $field, $lo, $hi);
     };
 
     // Getter: always returns $ty (extract bits lo..=hi)
-    (@getter $vis:vis ($bus:ty) $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
+    (@getter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
         $crate::__concat_idents!(fn_name = $reg, _, $field, {
-            /// Read a bitfield from the register.
+            $(#[$fmeta])*
             #[inline(always)]
             $vis fn fn_name(&self) -> $ty {
                 let raw = unsafe { std::ptr::read_volatile(self.devmem.as_ptr().add($offset) as *const $bus) } as $ty;
@@ -361,9 +611,9 @@ macro_rules! __register_one_bitfield {
     };
 
     // Setter: accepts $ty, does read-modify-write to set bits lo..=hi
-    (@setter $vis:vis ($bus:ty) $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
+    (@setter $vis:vis ($bus:ty) [$(#[$fmeta:meta])*] $offset:expr => $reg:ident : $ty:ty, $field:ident, $lo:expr, $hi:expr) => {
         $crate::__concat_idents!(fn_name = set_, $reg, _, $field, {
-            /// Write a bitfield in the register (read-modify-write).
+            $(#[$fmeta])*
             #[inline(always)]
             $vis fn fn_name(&mut self, value: $ty) {
                 let width: u32 = ($hi) - ($lo) + 1;
@@ -383,20 +633,6 @@ macro_rules! __register_one_bitfield {
 #[macro_export(local_inner_macros)]
 #[doc(hidden)]
 macro_rules! __register_methods {
-    ($vis: vis reg($bus: ty) $offset: expr => rw $name: ident : $ty: ty) => {
-        $crate::__register_methods!($vis reg base $offset => $name: $ty);
-        $crate::__register_methods!($vis reg($bus) read $offset => $name: $ty);
-        $crate::__register_methods!($vis reg($bus) write $offset => $name: $ty);
-        $crate::__register_methods!($vis reg($bus) modify $offset => $name: $ty);
-    };
-    ($vis: vis reg($bus: ty) $offset: expr => wo $name: ident : $ty: ty) => {
-        $crate::__register_methods!($vis reg base $offset => $name: $ty);
-        $crate::__register_methods!($vis reg($bus) write $offset => $name: $ty);
-    };
-    ($vis: vis reg($bus: ty) $offset: expr => ro $name: ident : $ty: ty) => {
-        $crate::__register_methods!($vis reg base $offset => $name: $ty);
-        $crate::__register_methods!($vis reg($bus) read $offset => $name: $ty);
-    };
     ($vis: vis reg base $offset: expr => $name: ident : $ty: ty) => {
         $crate::__concat_idents!(fn_name = $name, _offset, {
             /// Returns the offset of the register within the DevMem.
@@ -414,25 +650,25 @@ macro_rules! __register_methods {
             }
         });
     };
-    ($vis: vis reg($bus: ty) read $offset: expr => $name: ident : $ty: ty) => {
-        /// Volatile read of the register value.
+    ($vis: vis reg($bus: ty) read [$(#[$meta:meta])*] $offset: expr => $name: ident : $ty: ty) => {
+        $(#[$meta])*
         #[inline(always)]
         $vis fn $name(&self) -> $ty {
             unsafe { std::ptr::read_volatile(self.devmem.as_ptr().add($offset) as *const $bus) as $ty }
         }
     };
-    ($vis: vis reg($bus: ty) write $offset: expr => $name: ident : $ty: ty) => {
+    ($vis: vis reg($bus: ty) write [$(#[$meta:meta])*] $offset: expr => $name: ident : $ty: ty) => {
         $crate::__concat_idents!(fn_name = set_, $name, {
-            /// Volatile write to the register.
+            $(#[$meta])*
             #[inline(always)]
             $vis fn fn_name(&mut self, value: $ty) {
                 unsafe { std::ptr::write_volatile(self.devmem.as_ptr().add($offset) as *mut $bus, value as $bus) }
             }
         });
     };
-    ($vis: vis reg($bus: ty) modify $offset: expr => $name: ident : $ty: ty) => {
+    ($vis: vis reg($bus: ty) modify [$(#[$meta:meta])*] $offset: expr => $name: ident : $ty: ty) => {
         $crate::__concat_idents!(fn_name = modify_, $name, {
-            /// Read-modify-write the register.
+            $(#[$meta])*
             #[inline(always)]
             $vis fn fn_name(&mut self, f: impl FnOnce($ty) -> $ty) {
                 unsafe {
