@@ -14,7 +14,8 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'JetBrains Mono', 'Fira Code', monospace; background: var(--bg); color: var(--text); padding: 1rem; }
   h1 { color: var(--accent); margin-bottom: .25rem; font-size: 1.3rem; }
-  .meta { color: var(--text2); font-size: .8rem; margin-bottom: 1rem; }
+  h2 { color: var(--accent); margin: 1.5rem 0 .25rem; font-size: 1.1rem; border-bottom: 1px solid var(--border); padding-bottom: .25rem; }
+  .meta { color: var(--text2); font-size: .8rem; margin-bottom: .5rem; }
   .reg-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
   .reg-header { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: .5rem; }
   .reg-name { font-weight: 700; font-size: 1.05rem; color: var(--accent); }
@@ -47,21 +48,22 @@
 </head>
 <body>
 
-<h1 id="title">ddevmem Register Map</h1>
+<h1 id="title">ddevmem — Register Map</h1>
 <div class="meta" id="meta"></div>
 
 <div class="toolbar">
   <button onclick="refreshAll()">Refresh All</button>
+  <button onclick="dumpAll()">Dump All</button>
   <label><input type="checkbox" id="auto-refresh"> Auto-refresh (1s)</label>
   <span class="status" id="global-status"></span>
 </div>
 
-<div id="registers"></div>
+<div id="maps"></div>
 
 <script>
-let mapInfo = null;
-let autoTimer = null;
 const API_BASE = window.location.pathname.replace(/\/?$/, '/') + 'api';
+let allMaps = []; // { slug, name, info, apiPrefix }
+let autoTimer = null;
 
 const $  = id => document.getElementById(id);
 const ce = tag => document.createElement(tag);
@@ -95,115 +97,152 @@ function setBits(oldVal, lo, hi, newFieldVal) {
   return Number(v & ((1n << 64n) - 1n));
 }
 
-async function init() {
-  try {
-    mapInfo = await api('/info');
-    $('title').textContent = mapInfo.name + ' — Register Map';
-    $('meta').textContent = `Base: ${hexStr(mapInfo.base_address, 32)}  |  Bus width: ${mapInfo.bus_width * 8} bit  |  ${mapInfo.registers.length} register(s)`;
-    renderRegisters();
-    refreshAll();
-  } catch (e) {
-    $('registers').innerHTML = `<div class="error">Failed to load register info: ${e.message}</div>`;
-  }
-}
-
-function renderRegisters() {
-  const container = $('registers');
-  container.innerHTML = '';
-  for (const reg of mapInfo.registers) {
-    const card = ce('div');
-    card.className = 'reg-card';
-    card.id = 'reg-' + reg.offset;
-
-    let html = `<div class="reg-header">
-      <span class="reg-name">${reg.name}</span>
-      <span class="badge badge-${reg.access}">${reg.access}</span>
-      <span class="reg-offset">${hexStr(reg.offset, 16)} (${reg.width}-bit)</span>
-    </div>`;
-
-    if (reg.doc) html += `<div class="reg-doc">${escHtml(reg.doc)}</div>`;
-
-    if (reg.access !== 'wo') {
-      html += `<div class="reg-value">
-        <span>Value:</span>
-        <span class="hex" id="val-${reg.offset}">—</span>`;
-    }
-
-    if (reg.access !== 'ro') {
-      html += `<input id="inp-${reg.offset}" placeholder="hex value">
-        <button class="write-btn" onclick="writeReg(${reg.offset}, ${reg.width})">Write</button>`;
-    }
-
-    if (reg.access !== 'wo') {
-      html += `<button onclick="readReg(${reg.offset}, ${reg.width})">Read</button>`;
-    }
-
-    html += `<span class="status" id="st-${reg.offset}"></span></div>`;
-
-    if (reg.bitfields.length > 0) {
-      html += `<div class="bitfields"><table class="bf-table"><thead><tr>
-        <th>Field</th><th>Bits</th><th>Value</th>`;
-      if (reg.access !== 'ro') html += `<th>Set</th>`;
-      html += `<th>Doc</th></tr></thead><tbody>`;
-      for (const bf of reg.bitfields) {
-        const bits = bf.lo === bf.hi ? `${bf.lo}` : `${bf.hi}:${bf.lo}`;
-        html += `<tr>
-          <td>${bf.name}</td>
-          <td>${bits}</td>
-          <td class="bf-val" id="bf-${reg.offset}-${bf.name}">—</td>`;
-        if (reg.access !== 'ro') {
-          html += '<td>';
-          if (bf.variants && bf.variants.length > 0) {
-            html += '<select class="bf-input" id="bfi-' + reg.offset + '-' + bf.name + '">';
-            for (const v of bf.variants) {
-              html += '<option value="' + v.value + '">' + escHtml(v.name) + ' (' + v.value + ')</option>';
-            }
-            html += '</select>';
-          } else {
-            html += '<input class="bf-input" id="bfi-' + reg.offset + '-' + bf.name + '" placeholder="val">';
-          }
-          html += ' <button onclick="writeBitfield(' + reg.offset + ',' + bf.lo + ',' + bf.hi + ',\'' + bf.name + '\',' + reg.width + ')">Set</button></td>';
-        }
-        html += `<td class="bf-doc">${escHtml(bf.doc)}</td></tr>`;
-      }
-      html += `</tbody></table></div>`;
-    }
-
-    card.innerHTML = html;
-    container.appendChild(card);
-  }
-}
-
 function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
 }
 
-async function readReg(offset, width) {
-  const st = $('st-' + offset);
+async function init() {
   try {
-    const resp = await api('/read', { offset });
-    const el = $('val-' + offset);
+    // Try multi-map mode first (/api/maps), fall back to single-map (/api/info)
+    let multiMode = false;
+    try {
+      const maps = await api('/maps');
+      const infos = await Promise.all(maps.map(m => api('/' + m.slug + '/info')));
+      allMaps = maps.map((m, i) => ({
+        slug: m.slug, name: m.name, info: infos[i],
+        apiPrefix: '/' + m.slug
+      }));
+      multiMode = true;
+    } catch (_) {
+      const info = await api('/info');
+      allMaps = [{ slug: '_', name: info.name, info: info, apiPrefix: '' }];
+    }
+
+    if (multiMode) {
+      $('title').textContent = 'ddevmem — Register Maps';
+      $('meta').textContent = allMaps.length + ' register map(s)';
+    } else {
+      const info = allMaps[0].info;
+      $('title').textContent = info.name + ' — Register Map';
+      $('meta').textContent = 'Base: ' + hexStr(info.base_address, 32)
+        + '  |  Bus width: ' + (info.bus_width * 8) + ' bit'
+        + '  |  ' + info.registers.length + ' register(s)';
+    }
+
+    renderAll(multiMode);
+    refreshAll();
+  } catch (e) {
+    $('maps').innerHTML = '<div class="error">Failed to load: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function renderAll(showHeaders) {
+  const container = $('maps');
+  container.innerHTML = '';
+  for (const map of allMaps) {
+    const info = map.info;
+    const section = ce('div');
+    section.id = 'map-' + map.slug;
+
+    let html = '';
+    if (showHeaders) {
+      html += '<h2>' + escHtml(info.name) + '</h2>';
+      html += '<div class="meta">' + escHtml(map.slug) + ' · Base: ' + hexStr(info.base_address, 32)
+            + ' · Bus: ' + (info.bus_width * 8) + '-bit · ' + info.registers.length + ' register(s)</div>';
+    }
+
+    for (const reg of info.registers) {
+      const uid = map.slug + '-' + reg.offset;
+      html += '<div class="reg-card" id="reg-' + uid + '">';
+      html += '<div class="reg-header">'
+            + '<span class="reg-name">' + escHtml(reg.name) + '</span>'
+            + '<span class="badge badge-' + reg.access + '">' + reg.access + '</span>'
+            + '<span class="reg-offset">' + hexStr(reg.offset, 16) + ' (' + reg.width + '-bit)</span>'
+            + '</div>';
+      if (reg.doc) html += '<div class="reg-doc">' + escHtml(reg.doc) + '</div>';
+
+      html += '<div class="reg-value">';
+      if (reg.access !== 'wo') {
+        html += '<span>Value:</span><span class="hex" id="val-' + uid + '">—</span>';
+      }
+      if (reg.access !== 'ro') {
+        html += '<input id="inp-' + uid + '" placeholder="hex value">'
+              + '<button class="write-btn" onclick="writeReg(\'' + map.slug + '\',' + reg.offset + ',' + reg.width + ')">Write</button>';
+      }
+      if (reg.access !== 'wo') {
+        html += '<button onclick="readReg(\'' + map.slug + '\',' + reg.offset + ',' + reg.width + ')">Read</button>';
+      }
+      html += '<span class="status" id="st-' + uid + '"></span></div>';
+
+      if (reg.bitfields.length > 0) {
+        html += '<div class="bitfields"><table class="bf-table"><thead><tr>'
+              + '<th>Field</th><th>Bits</th><th>Value</th>';
+        if (reg.access !== 'ro') html += '<th>Set</th>';
+        html += '<th>Doc</th></tr></thead><tbody>';
+        for (const bf of reg.bitfields) {
+          const bits = bf.lo === bf.hi ? '' + bf.lo : bf.hi + ':' + bf.lo;
+          const bfid = uid + '-' + bf.name;
+          html += '<tr><td>' + escHtml(bf.name) + '</td><td>' + bits + '</td>'
+                + '<td class="bf-val" id="bf-' + bfid + '">—</td>';
+          if (reg.access !== 'ro') {
+            html += '<td>';
+            if (bf.variants && bf.variants.length > 0) {
+              html += '<select class="bf-input" id="bfi-' + bfid + '">';
+              for (const v of bf.variants) {
+                html += '<option value="' + v.value + '">' + escHtml(v.name) + ' (' + v.value + ')</option>';
+              }
+              html += '</select>';
+            } else {
+              html += '<input class="bf-input" id="bfi-' + bfid + '" placeholder="val">';
+            }
+            html += ' <button onclick="writeBitfield(\'' + map.slug + '\',' + reg.offset + ',' + bf.lo + ',' + bf.hi + ',\'' + bf.name + '\',' + reg.width + ')">Set</button></td>';
+          }
+          html += '<td class="bf-doc">' + escHtml(bf.doc) + '</td></tr>';
+        }
+        html += '</tbody></table></div>';
+      }
+      html += '</div>';
+    }
+    section.innerHTML = html;
+    container.appendChild(section);
+  }
+}
+
+function getMap(slug) {
+  return allMaps.find(m => m.slug === slug);
+}
+
+async function readReg(slug, offset, width) {
+  const map = getMap(slug);
+  if (!map) return;
+  const uid = slug + '-' + offset;
+  const st = $('st-' + uid);
+  try {
+    const resp = await api(map.apiPrefix + '/read', { offset });
+    const el = $('val-' + uid);
     if (el) el.textContent = hexStr(resp.value, width);
-    updateBitfields(offset, resp.value);
+    updateBitfields(slug, offset, resp.value);
     if (st) st.textContent = '';
   } catch (e) {
     if (st) st.textContent = e.message;
   }
 }
 
-function updateBitfields(offset, value) {
-  const reg = mapInfo.registers.find(r => r.offset === offset);
+function updateBitfields(slug, offset, value) {
+  const map = getMap(slug);
+  if (!map) return;
+  const reg = map.info.registers.find(r => r.offset === offset);
   if (!reg) return;
   for (const bf of reg.bitfields) {
-    const el = $('bf-' + offset + '-' + bf.name);
+    const el = $('bf-' + slug + '-' + offset + '-' + bf.name);
     if (!el) continue;
     const rawVal = extractBits(value, bf.lo, bf.hi);
     if (bf.variants && bf.variants.length > 0) {
       const v = bf.variants.find(v => v.value === rawVal);
       el.textContent = v ? v.name + ' (' + rawVal + ')' : String(rawVal);
-      const sel = $('bfi-' + offset + '-' + bf.name);
+      const sel = $('bfi-' + slug + '-' + offset + '-' + bf.name);
       if (sel && sel.tagName === 'SELECT') sel.value = String(rawVal);
     } else {
       el.textContent = rawVal;
@@ -211,44 +250,110 @@ function updateBitfields(offset, value) {
   }
 }
 
-async function writeReg(offset, width) {
-  const inp = $('inp-' + offset);
-  const st = $('st-' + offset);
+async function writeReg(slug, offset, width) {
+  const map = getMap(slug);
+  if (!map) return;
+  const uid = slug + '-' + offset;
+  const inp = $('inp-' + uid);
+  const st = $('st-' + uid);
   if (!inp) return;
   try {
     const value = Number(inp.value.trim());
     if (isNaN(value)) throw new Error('invalid number');
-    await api('/write', { offset, value });
+    await api(map.apiPrefix + '/write', { offset, value });
     if (st) st.textContent = 'written';
-    await readReg(offset, width);
+    await readReg(slug, offset, width);
   } catch (e) {
     if (st) st.textContent = e.message;
   }
 }
 
-async function writeBitfield(offset, lo, hi, name, width) {
-  const inp = $('bfi-' + offset + '-' + name);
-  const st = $('st-' + offset);
+async function writeBitfield(slug, offset, lo, hi, name, width) {
+  const map = getMap(slug);
+  if (!map) return;
+  const uid = slug + '-' + offset;
+  const inp = $('bfi-' + uid + '-' + name);
+  const st = $('st-' + uid);
   if (!inp) return;
   try {
     const fieldVal = Number(inp.value.trim());
     if (isNaN(fieldVal)) throw new Error('invalid number');
-    const resp = await api('/read', { offset });
+    const resp = await api(map.apiPrefix + '/read', { offset });
     const newVal = setBits(resp.value, lo, hi, fieldVal);
-    await api('/write', { offset, value: newVal });
-    if (st) st.textContent = `${name} updated`;
-    await readReg(offset, width);
+    await api(map.apiPrefix + '/write', { offset, value: newVal });
+    if (st) st.textContent = name + ' updated';
+    await readReg(slug, offset, width);
   } catch (e) {
     if (st) st.textContent = e.message;
   }
 }
 
 async function refreshAll() {
-  if (!mapInfo) return;
-  for (const reg of mapInfo.registers) {
-    if (reg.access !== 'wo') {
-      readReg(reg.offset, reg.width);
+  for (const map of allMaps) {
+    for (const reg of map.info.registers) {
+      if (reg.access !== 'wo') readReg(map.slug, reg.offset, reg.width);
     }
+  }
+}
+
+async function dumpAll() {
+  if (!allMaps.length) return;
+  const gs = $('global-status');
+  if (gs) gs.textContent = 'Dumping...';
+  try {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const multi = allMaps.length > 1 || allMaps[0].slug !== '_';
+    let lines = [];
+    lines.push('# ddevmem register dump');
+    lines.push('# Date: ' + new Date().toISOString());
+    if (multi) lines.push('# Maps: ' + allMaps.length);
+    lines.push('');
+    let fileName;
+    for (const map of allMaps) {
+      const info = map.info;
+      if (multi) {
+        lines.push('## ' + info.name + ' (' + map.slug + ')');
+      } else {
+        lines[0] = '# ' + info.name + ' register dump';
+        fileName = info.name;
+      }
+      lines.push('# Base address: ' + hexStr(info.base_address, 32));
+      lines.push('# Bus width: ' + (info.bus_width * 8) + ' bit');
+      lines.push('');
+      for (const reg of info.registers) {
+        if (reg.access === 'wo') {
+          lines.push(hexStr(reg.offset, 16) + '  ' + reg.name.padEnd(20) + '  [write-only]');
+          continue;
+        }
+        try {
+          const resp = await api(map.apiPrefix + '/read', { offset: reg.offset });
+          const val = resp.value;
+          lines.push(hexStr(reg.offset, 16) + '  ' + reg.name.padEnd(20) + '  ' + hexStr(val, reg.width) + '  (' + reg.access + ')');
+          for (const bf of reg.bitfields) {
+            const raw = extractBits(val, bf.lo, bf.hi);
+            const bits = bf.lo === bf.hi ? 'bit ' + bf.lo : 'bits ' + bf.hi + ':' + bf.lo;
+            let valStr = String(raw);
+            if (bf.variants && bf.variants.length > 0) {
+              const v = bf.variants.find(v => v.value === raw);
+              if (v) valStr = v.name + ' (' + raw + ')';
+            }
+            lines.push('    ' + bf.name.padEnd(20) + '  [' + bits + ']  = ' + valStr);
+          }
+        } catch (e) {
+          lines.push(hexStr(reg.offset, 16) + '  ' + reg.name.padEnd(20) + '  [read error: ' + e.message + ']');
+        }
+      }
+      lines.push('');
+    }
+    const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (fileName || 'regdump') + '_' + ts + '.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    if (gs) gs.textContent = 'Dump saved';
+  } catch (e) {
+    if (gs) gs.textContent = 'Dump failed: ' + e.message;
   }
 }
 

@@ -10,6 +10,9 @@ license.workspace = true
 [lib]
 proc-macro = true
 
+[features]
+web = []
+
 [dependencies]
 proc-macro2 = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }

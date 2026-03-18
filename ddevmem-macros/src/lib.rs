@@ -256,6 +256,7 @@ impl AccessKind {
     fn has_modify(self) -> bool {
         self == AccessKind::Rw
     }
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
     fn as_str(self) -> &'static str {
         match self {
             AccessKind::Rw => "rw",
@@ -265,6 +266,7 @@ impl AccessKind {
     }
 }
 
+#[cfg_attr(not(feature = "web"), allow(dead_code))]
 fn extract_doc_string(attrs: &[Attribute]) -> String {
     let mut doc = String::new();
     for attr in attrs {
@@ -574,114 +576,122 @@ fn gen_bitfield_methods(
 }
 
 fn gen_web_impl(map: &RegisterMap) -> TokenStream2 {
-    let name = &map.name;
-    let bus = &map.bus;
+    #[cfg(not(feature = "web"))]
+    {
+        let _ = map;
+        TokenStream2::new()
+    }
 
-    let mut register_infos = TokenStream2::new();
-    for entry in &map.entries {
-        let reg_name_str = entry.name.to_string();
-        let offset = &entry.offset;
-        let ty = &entry.ty;
-        let access_str = entry.kind.as_str();
-        let doc_str = extract_doc_string(&entry.attrs);
+    #[cfg(feature = "web")]
+    {
+        let name = &map.name;
+        let bus = &map.bus;
 
-        let mut bitfield_pushes = TokenStream2::new();
-        for bf in &entry.bitfields {
-            let bf_name_str = bf.name.to_string();
-            let bf_doc = extract_doc_string(&bf.attrs);
-            let lo = &bf.lo;
-            let hi = &bf.hi;
+        let mut register_infos = TokenStream2::new();
+        for entry in &map.entries {
+            let reg_name_str = entry.name.to_string();
+            let offset = &entry.offset;
+            let ty = &entry.ty;
+            let access_str = entry.kind.as_str();
+            let doc_str = extract_doc_string(&entry.attrs);
 
-            let (ft_str, variants_expr) = match &bf.field_type {
-                FieldType::Raw => ("raw".to_string(), quote! { Vec::new() }),
-                FieldType::Bool => (
-                    "bool".to_string(),
-                    quote! {
-                        vec![
-                            ::ddevmem::web::VariantInfo { name: "false", value: 0 },
-                            ::ddevmem::web::VariantInfo { name: "true",  value: 1 },
-                        ]
-                    },
-                ),
-                FieldType::Cast(ct) => {
-                    let ct_str = quote!(#ct).to_string();
-                    (ct_str, quote! { Vec::new() })
-                }
-                FieldType::Enum(ed) => {
-                    let en_str = ed.name.to_string();
-                    let v_names: Vec<String> =
-                        ed.variants.iter().map(|v| v.name.to_string()).collect();
-                    let v_vals: Vec<&Expr> = ed.variants.iter().map(|v| &v.value).collect();
-                    (
-                        en_str,
+            let mut bitfield_pushes = TokenStream2::new();
+            for bf in &entry.bitfields {
+                let bf_name_str = bf.name.to_string();
+                let bf_doc = extract_doc_string(&bf.attrs);
+                let lo = &bf.lo;
+                let hi = &bf.hi;
+
+                let (ft_str, variants_expr) = match &bf.field_type {
+                    FieldType::Raw => ("raw".to_string(), quote! { Vec::new() }),
+                    FieldType::Bool => (
+                        "bool".to_string(),
                         quote! {
                             vec![
-                                #(::ddevmem::web::VariantInfo {
-                                    name: #v_names,
-                                    value: #v_vals as u64,
-                                },)*
+                                ::ddevmem::web::VariantInfo { name: "false", value: 0 },
+                                ::ddevmem::web::VariantInfo { name: "true",  value: 1 },
                             ]
                         },
-                    )
-                }
-            };
+                    ),
+                    FieldType::Cast(ct) => {
+                        let ct_str = quote!(#ct).to_string();
+                        (ct_str, quote! { Vec::new() })
+                    }
+                    FieldType::Enum(ed) => {
+                        let en_str = ed.name.to_string();
+                        let v_names: Vec<String> =
+                            ed.variants.iter().map(|v| v.name.to_string()).collect();
+                        let v_vals: Vec<&Expr> = ed.variants.iter().map(|v| &v.value).collect();
+                        (
+                            en_str,
+                            quote! {
+                                vec![
+                                    #(::ddevmem::web::VariantInfo {
+                                        name: #v_names,
+                                        value: #v_vals as u64,
+                                    },)*
+                                ]
+                            },
+                        )
+                    }
+                };
 
-            bitfield_pushes.extend(quote! {
-                bitfields.push(::ddevmem::web::BitfieldInfo {
-                    name: #bf_name_str,
-                    doc: #bf_doc,
-                    lo: #lo,
-                    hi: #hi,
-                    field_type: #ft_str,
-                    variants: #variants_expr,
+                bitfield_pushes.extend(quote! {
+                    bitfields.push(::ddevmem::web::BitfieldInfo {
+                        name: #bf_name_str,
+                        doc: #bf_doc,
+                        lo: #lo,
+                        hi: #hi,
+                        field_type: #ft_str,
+                        variants: #variants_expr,
+                    });
                 });
+            }
+
+            register_infos.extend(quote! {
+                {
+                    let mut bitfields = Vec::new();
+                    #bitfield_pushes
+                    regs.push(::ddevmem::web::RegisterInfo {
+                        name: #reg_name_str,
+                        doc: #doc_str,
+                        offset: #offset,
+                        access: #access_str,
+                        width: ::core::mem::size_of::<#ty>() * 8,
+                        bitfields,
+                    });
+                }
             });
         }
 
-        register_infos.extend(quote! {
-            {
-                let mut bitfields = Vec::new();
-                #bitfield_pushes
-                regs.push(::ddevmem::web::RegisterInfo {
-                    name: #reg_name_str,
-                    doc: #doc_str,
-                    offset: #offset,
-                    access: #access_str,
-                    width: ::core::mem::size_of::<#ty>() * 8,
-                    bitfields,
-                });
-            }
-        });
-    }
+        let name_str = name.to_string();
+        quote! {
+            impl ::ddevmem::web::RegisterMapInfo for #name {
+                fn map_name(&self) -> &'static str {
+                    #name_str
+                }
 
-    let name_str = name.to_string();
-    quote! {
-        #[cfg(feature = "web")]
-        impl ::ddevmem::web::RegisterMapInfo for #name {
-            fn map_name(&self) -> &'static str {
-                #name_str
-            }
+                fn bus_width(&self) -> usize {
+                    ::core::mem::size_of::<#bus>()
+                }
 
-            fn bus_width(&self) -> usize {
-                ::core::mem::size_of::<#bus>()
-            }
+                fn base_address(&self) -> usize {
+                    self.devmem.address()
+                }
 
-            fn base_address(&self) -> usize {
-                self.devmem.address()
-            }
+                fn registers(&self) -> Vec<::ddevmem::web::RegisterInfo> {
+                    let mut regs = Vec::new();
+                    #register_infos
+                    regs
+                }
 
-            fn registers(&self) -> Vec<::ddevmem::web::RegisterInfo> {
-                let mut regs = Vec::new();
-                #register_infos
-                regs
-            }
+                fn read_register(&self, offset: usize) -> Option<u64> {
+                    self.devmem.read::<#bus>(offset).map(|v| v as u64)
+                }
 
-            fn read_register(&self, offset: usize) -> Option<u64> {
-                self.devmem.read::<#bus>(offset).map(|v| v as u64)
-            }
-
-            fn write_register(&mut self, offset: usize, value: u64) -> Option<()> {
-                self.devmem.write::<#bus>(offset, value as #bus)
+                fn write_register(&mut self, offset: usize, value: u64) -> Option<()> {
+                    self.devmem.write::<#bus>(offset, value as #bus)
+                }
             }
         }
     }

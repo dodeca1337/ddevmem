@@ -542,5 +542,5 @@ async fn multi_api_write(
 // ─── Multi-map HTML page ────────────────────────────────────────────────────
 
 async fn multi_index_page() -> Html<&'static str> {
-    Html(include_str!("web_multi.html"))
+    Html(include_str!("web_ui.html"))
 }
