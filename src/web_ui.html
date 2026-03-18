@@ -26,7 +26,7 @@
   .badge-wo { background: var(--orange); color: #1e1e2e; }
   .reg-doc { color: var(--text2); font-size: .8rem; margin-bottom: .5rem; font-style: italic; }
   .reg-value { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap; }
-  .reg-value input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-family: inherit; font-size: .85rem; width: 10ch; }
+  .reg-value input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-family: inherit; font-size: .85rem; width: 14ch; }
   .reg-value .hex { color: var(--text2); font-size: .8rem; min-width: 12ch; }
   button { background: var(--accent); color: var(--bg); border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: .8rem; font-weight: 600; }
   button:hover { opacity: .85; }
@@ -44,6 +44,13 @@
   #auto-refresh { margin: 0 .5rem; }
   .toolbar { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
   .toolbar label { font-size: .8rem; color: var(--text2); cursor: pointer; }
+  .layout { display: flex; gap: 1rem; }
+  .sidebar { position: sticky; top: 1rem; align-self: flex-start; min-width: 180px; max-width: 220px; max-height: calc(100vh - 2rem); overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: .5rem; display: none; }
+  .sidebar.visible { display: block; }
+  .sidebar a { display: block; padding: 4px 8px; color: var(--text); text-decoration: none; font-size: .78rem; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sidebar a:hover, .sidebar a.active { background: var(--bg); color: var(--accent); }
+  .sidebar .nav-heading { color: var(--accent); font-weight: 700; font-size: .8rem; padding: 6px 8px 2px; }
+  .main-content { flex: 1; min-width: 0; }
 </style>
 </head>
 <body>
@@ -58,7 +65,12 @@
   <span class="status" id="global-status"></span>
 </div>
 
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<div class="main-content">
 <div id="maps"></div>
+</div>
+</div>
 
 <script>
 const API_BASE = window.location.pathname.replace(/\/?$/, '/') + 'api';
@@ -207,6 +219,23 @@ function renderAll(showHeaders) {
     }
     section.innerHTML = html;
     container.appendChild(section);
+  }
+
+  // Build sidebar navigation
+  const sidebar = $('sidebar');
+  let navHtml = '';
+  for (const map of allMaps) {
+    const info = map.info;
+    navHtml += '<div class="nav-heading">' + escHtml(info.name) + '</div>';
+    for (const reg of info.registers) {
+      const uid = map.slug + '-' + reg.offset;
+      navHtml += '<a href="#reg-' + uid + '" title="' + escHtml(reg.name) + ' ' + hexStr(reg.offset, 16) + '">'
+               + escHtml(reg.name) + '</a>';
+    }
+  }
+  sidebar.innerHTML = navHtml;
+  if (allMaps.reduce((s, m) => s + m.info.registers.length, 0) > 1) {
+    sidebar.classList.add('visible');
   }
 }
 
