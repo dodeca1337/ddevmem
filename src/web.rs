@@ -273,7 +273,8 @@ fn unauthorized_response() -> Response {
 }
 
 async fn index_page() -> Html<&'static str> {
-    Html(include_str!("web_ui.html"))
+    // Minified at build time by build.rs; source lives in src/web_ui.html.
+    Html(include_str!(concat!(env!("OUT_DIR"), "/web_ui.min.html")))
 }
 
 // ─── Builder ─────────────────────────────────────────────────────────────────

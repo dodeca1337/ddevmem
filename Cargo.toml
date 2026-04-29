@@ -28,10 +28,16 @@ tokio = { version = "1", features = ["sync"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 base64 = { version = "0.22.1", optional = true }
-subtle = { version = "2.6", optional = true }
+subtle = { version = "2.6.1", optional = true }
+
+[build-dependencies]
+# Used by build.rs to minify src/web_ui.html into OUT_DIR. Always compiled
+# (Cargo has no clean way to gate build-deps on feature flags), but the
+# minifier is pure Rust and fast.
+minify-html = "0.18.1"
 
 [features]
-default = ["emulator", "register-map", "web"]
+default = ["device", "register-map", "web"]
 register-map = ["ddevmem-macros"]
 device = ["memmap2"]
 emulator = []
@@ -48,28 +54,28 @@ web = [
 
 [[example]]
 name = "bitfield"
-required-features = ["register-map"]
+required-features = ["register-map", "emulator"]
 
 [[example]]
 name = "default_bus"
-required-features = ["register-map"]
+required-features = ["register-map", "emulator"]
 
 [[example]]
 name = "web_server"
-required-features = ["web"]
+required-features = ["web", "emulator"]
 
 [[example]]
 name = "web_auth"
-required-features = ["web"]
+required-features = ["web", "emulator"]
 
 [[example]]
 name = "multi_web"
-required-features = ["web"]
+required-features = ["web", "emulator"]
 
 [[example]]
 name = "multi_same_map"
-required-features = ["web"]
+required-features = ["web", "emulator"]
 
 [[example]]
 name = "typed_bitfield"
-required-features = ["register-map"]
+required-features = ["register-map", "emulator"]
