@@ -35,10 +35,20 @@ async fn main() {
     let regs = unsafe { GpioRegs::new(Arc::new(devmem)).unwrap() };
     let regs = Arc::new(Mutex::new(regs));
 
-    // Authenticate with static credentials
+    // Authenticate with static credentials. Use `ct_eq` (constant-time
+    // comparison) instead of `==` so response timing does not leak the
+    // password, and bitwise `&` instead of `&&` to evaluate both checks
+    // unconditionally.
     let app = axum::Router::new().nest(
         "/",
-        ddevmem::web::router_with_auth(regs, |user, pass| user == "admin" && pass == "secret"),
+        ddevmem::web::WebUi::new()
+            .add("gpio", regs)
+            .with_auth(|user, pass| async move {
+                // `with_auth` is async, so a real implementation could query a
+                // database or remote auth service here.
+                ddevmem::web::ct_eq(&user, "admin") & ddevmem::web::ct_eq(&pass, "secret")
+            })
+            .build(),
     );
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();

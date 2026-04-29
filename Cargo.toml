@@ -28,9 +28,10 @@ tokio = { version = "1", features = ["sync"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 base64 = { version = "0.22.1", optional = true }
+subtle = { version = "2.6", optional = true }
 
 [features]
-default = ["device", "register-map"]
+default = ["device", "register-map", "web"]
 register-map = ["ddevmem-macros"]
 device = ["memmap2"]
 emulator = []
@@ -42,6 +43,7 @@ web = [
     "serde",
     "serde_json",
     "base64",
+    "subtle",
 ]
 
 [[example]]

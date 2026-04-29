@@ -323,7 +323,9 @@ async fn main() {
     let regs = unsafe { PwmRegs::new(Arc::new(devmem)).unwrap() };
     let regs = Arc::new(Mutex::new(regs));
 
-    let app = ddevmem::web::router(regs);
+    let app = ddevmem::web::WebUi::new()
+        .add("pwm", regs)
+        .build();
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("Register map UI at http://localhost:3000");
@@ -333,10 +335,18 @@ async fn main() {
 
 **With HTTP Basic authentication:**
 
+> **Security note.** HTTP Basic transmits credentials `base64`-encoded, **not
+> encrypted** — always run the server behind TLS (e.g. `nginx`, `caddy`,
+> `axum-server` + `rustls`) for anything beyond a trusted local network.
+> Compare secrets in **constant time** with [`ct_eq`](https://docs.rs/ddevmem/latest/ddevmem/web/fn.ct_eq.html)
+> instead of `==` to avoid leaking the password through response timing,
+> and use bitwise `&` (not `&&`) so both comparisons run unconditionally.
+
 ```rust,no_run
 # use std::sync::Arc;
 # use tokio::sync::Mutex;
 # use ddevmem::{register_map, DevMem};
+# use ddevmem::web::ct_eq;
 # register_map! {
 #     pub unsafe map R (u32) { 0x00 => rw x: u32 }
 # }
@@ -344,15 +354,17 @@ async fn main() {
 # let devmem = unsafe { DevMem::new(0x0, None).unwrap() };
 # let regs = unsafe { R::new(Arc::new(devmem)).unwrap() };
 # let regs = Arc::new(Mutex::new(regs));
-// Static credentials
-let app = ddevmem::web::router_with_auth(regs.clone(), |user, pass| {
-    user == "admin" && pass == "hunter2"
-});
+// Static credentials (constant-time comparison)
+let app = ddevmem::web::WebUi::new()
+    .add("r", regs.clone())
+    .with_auth(|user, pass| ct_eq(user, "admin") & ct_eq(pass, "hunter2"))
+    .build();
 
 // Or validate against an external source
-let app = ddevmem::web::router_with_auth(regs, |user, pass| {
-    my_auth_db::check(user, pass)
-});
+let app = ddevmem::web::WebUi::new()
+    .add("r", regs)
+    .with_auth(|user, pass| my_auth_db::check(user, pass))
+    .build();
 # }
 # mod my_auth_db { pub fn check(_: &str, _: &str) -> bool { true } }
 ```
@@ -380,23 +392,26 @@ Use `axum::Router::nest()` to mount it wherever you need:
 # let regs = unsafe { R::new(Arc::new(devmem)).unwrap() };
 # let regs = Arc::new(Mutex::new(regs));
 // Mount at a custom prefix:
-let app = axum::Router::new()
-    .nest("/registers/axi", ddevmem::web::router(regs));
+let app = axum::Router::new().nest(
+    "/registers/axi",
+    ddevmem::web::WebUi::new().add("axi", regs).build(),
+);
 # }
 ```
 
 **Single-map API endpoints** (relative to mount point):
 
-| Method | Path         | Body                           | Response                                              |
-| ------ | ------------ | ------------------------------ | ----------------------------------------------------- |
-| GET    | `/`          | —                              | HTML single-page app                                  |
-| GET    | `/api/info`  | —                              | `{ name, bus_width, base_address, registers: [...] }` |
-| POST   | `/api/read`  | `{ "offset": 0 }`              | `{ "value": 12345 }`                                  |
-| POST   | `/api/write` | `{ "offset": 0, "value": 42 }` | `200 OK`                                              |
+| Method | Path                | Body                           | Response                                              |
+| ------ | ------------------- | ------------------------------ | ----------------------------------------------------- |
+| GET    | `/`                 | —                              | HTML single-page app                                  |
+| GET    | `/api/maps`         | —                              | `[{ slug, name }, ...]`                               |
+| GET    | `/api/{slug}/info`  | —                              | `{ name, bus_width, base_address, registers: [...] }` |
+| POST   | `/api/{slug}/read`  | `{ "offset": 0 }`              | `{ "value": 12345 }`                                  |
+| POST   | `/api/{slug}/write` | `{ "offset": 0, "value": 42 }` | `200 OK`                                              |
 
 **Hosting multiple register maps on one page:**
 
-Use `multi_router()` to serve several maps.
+The same `WebUi` builder accepts several `.add(slug, regs)` calls.
 All maps are displayed together on a single page.
 
 ```rust,no_run
@@ -416,32 +431,23 @@ All maps are displayed together on a single page.
 # let gpio = unsafe { Gpio::new(Arc::new(d2)).unwrap() };
 let app = axum::Router::new().nest(
     "/hw",
-    ddevmem::web::multi_router()
+    ddevmem::web::WebUi::new()
         .add("spi", Arc::new(Mutex::new(spi)))
         .add("gpio", Arc::new(Mutex::new(gpio)))
         .build(),
 );
 
 // With auth:
-// let r = ddevmem::web::multi_router_with_auth(|u, p| u == "admin" && p == "secret")
+// let r = ddevmem::web::WebUi::new()
 //     .add("spi", spi_regs)
 //     .add("gpio", gpio_regs)
+//     .with_auth(|u, p| u == "admin" && p == "secret")
 //     .build();
 
 let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
 axum::serve(listener, app).await.unwrap();
 # }
 ```
-
-**Multi-map API endpoints** (relative to mount point):
-
-| Method | Path                | Body                           | Response                                              |
-| ------ | ------------------- | ------------------------------ | ----------------------------------------------------- |
-| GET    | `/`                 | —                              | HTML page showing all maps                            |
-| GET    | `/api/maps`         | —                              | `[{ slug, name }, ...]`                               |
-| GET    | `/api/{slug}/info`  | —                              | `{ name, bus_width, base_address, registers: [...] }` |
-| POST   | `/api/{slug}/read`  | `{ "offset": 0 }`              | `{ "value": 12345 }`                                  |
-| POST   | `/api/{slug}/write` | `{ "offset": 0, "value": 42 }` | `200 OK`                                              |
 
 ### Using the emulator for testing
 

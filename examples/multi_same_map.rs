@@ -68,7 +68,7 @@ async fn main() {
 
     let app = axum::Router::new().nest(
         "/hw",
-        ddevmem::web::multi_router()
+        ddevmem::web::WebUi::new()
             .add("timer1", Arc::new(Mutex::new(tim1)))
             .add("timer2", Arc::new(Mutex::new(tim2)))
             .build(),

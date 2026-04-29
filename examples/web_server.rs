@@ -51,7 +51,7 @@ async fn main() {
 
     // The router has no fixed root — nest it at any path.
     // Use .nest("/", ...) to serve from the root, or any other prefix.
-    let app = axum::Router::new().nest("/", ddevmem::web::router(regs));
+    let app = axum::Router::new().nest("/", ddevmem::web::WebUi::new().add("pwm", regs).build());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("Register map web UI at http://localhost:3000");

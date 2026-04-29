@@ -96,9 +96,9 @@ async fn main() {
     pwm.set_period(1000);
     pwm.set_duty(250);
 
-    // The multi_router() builder produces a Router with no fixed root path,
+    // The WebUi builder produces a Router with no fixed root path,
     // so it can be nested under any prefix on a larger server.
-    let regs_router = ddevmem::web::multi_router()
+    let regs_router = ddevmem::web::WebUi::new()
         .add("spi", Arc::new(Mutex::new(spi)))
         .add("gpio", Arc::new(Mutex::new(gpio)))
         .add("pwm", Arc::new(Mutex::new(pwm)))

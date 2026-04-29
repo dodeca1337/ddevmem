@@ -2,20 +2,61 @@
 //!
 //! Enable the `web` feature to pull in [`axum`] and get a ready-made HTTP
 //! interface for any type that implements [`RegisterMapInfo`] (automatically
-//! derived by [`register_map!`]).
+//! derived by [`register_map!`](crate::register_map)).
 //!
 //! Typed bitfields (`as bool`, `as enum`) are rendered as dropdown selectors
 //! in the web UI instead of plain numeric inputs.
 //!
-//! The returned [`Router`] has **no root path baked in**, so it can be nested
-//! freely under any prefix with [`Router::nest`].
+//! [`WebUi`] is a builder that hosts one or more register maps on a single
+//! page. The resulting [`Router`] has **no root path baked in**, so it can be
+//! nested freely under any prefix with [`Router::nest`].
 //!
-//! # Single map
+//! # Security
+//!
+//! [`WebUi::with_auth`] uses HTTP Basic authentication. Credentials are sent
+//! `base64`-encoded — **not** encrypted. The web UI is intended for trusted
+//! networks (lab benches, internal VLANs, SSH-tunnels). For any exposed
+//! deployment **always terminate TLS in front of the server** (e.g. with
+//! `nginx`, `caddy`, or `axum-server` + `rustls`).
+//!
+//! When implementing the credential check, compare secrets in **constant
+//! time** to avoid leaking the password through response-time side channels.
+//! Use [`ct_eq`] for a ready-made constant-time string comparison:
+//!
+//! ```rust,no_run
+//! # use std::sync::Arc;
+//! # use tokio::sync::Mutex;
+//! # use ddevmem::{register_map, DevMem};
+//! # use ddevmem::web::{WebUi, ct_eq};
+//! # register_map! { pub unsafe map R (u32) { 0x00 => rw x: u32 } }
+//! # async fn run() {
+//! # let devmem = unsafe { DevMem::new(0x0, None).unwrap() };
+//! # let regs = unsafe { R::new(Arc::new(devmem)).unwrap() };
+//! # let regs = Arc::new(Mutex::new(regs));
+//! let app = WebUi::new()
+//!     .add("r", regs)
+//!     .with_auth(|user, pass| async move {
+//!         ct_eq(&user, "admin") & ct_eq(&pass, "hunter2")
+//!     })
+//!     .build();
+//! # }
+//! ```
+//!
+//! Note the bitwise `&` (not `&&`): short-circuit evaluation would re-introduce
+//! the timing leak.
+//!
+//! There is currently **no built-in CSRF protection or rate limiting**. If
+//! the same browser session may visit untrusted origins while authenticated,
+//! protect the deployment with a reverse proxy that enforces `Origin` /
+//! `Referer` checks or that rate-limits failed authentications.
+//!
+//! # One map
 //!
 //! ```rust,no_run
 //! use std::sync::Arc;
 //! use tokio::sync::Mutex;
 //! use ddevmem::{register_map, DevMem};
+//! use ddevmem::web::WebUi;
 //!
 //! register_map! {
 //!     pub unsafe map Regs (u32) {
@@ -31,11 +72,13 @@
 //! # async fn run() {
 //! let devmem = unsafe { DevMem::new(0x4000_0000, None).unwrap() };
 //! let regs = unsafe { Regs::new(Arc::new(devmem)).unwrap() };
-//! let regs = Arc::new(Mutex::new(regs));
 //!
-//! // Mount at any prefix:
-//! let app = axum::Router::new()
-//!     .nest("/registers/axi", ddevmem::web::router(regs));
+//! let app = axum::Router::new().nest(
+//!     "/registers/axi",
+//!     WebUi::new()
+//!         .add("axi", Arc::new(Mutex::new(regs)))
+//!         .build(),
+//! );
 //!
 //! let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
 //! axum::serve(listener, app).await.unwrap();
@@ -48,6 +91,7 @@
 //! # use std::sync::Arc;
 //! # use tokio::sync::Mutex;
 //! # use ddevmem::{register_map, DevMem};
+//! # use ddevmem::web::WebUi;
 //! # register_map! { pub unsafe map Spi (u32) { 0x00 => rw cr: u32 } }
 //! # register_map! { pub unsafe map Gpio (u32) { 0x00 => rw data: u32 } }
 //! # async fn run() {
@@ -57,7 +101,7 @@
 //! # let gpio = unsafe { Gpio::new(Arc::new(d2)).unwrap() };
 //! let app = axum::Router::new().nest(
 //!     "/hw",
-//!     ddevmem::web::multi_router()
+//!     WebUi::new()
 //!         .add("spi", Arc::new(Mutex::new(spi)))
 //!         .add("gpio", Arc::new(Mutex::new(gpio)))
 //!         .build(),
@@ -75,10 +119,12 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-// ─── Metadata types ──────────────────────────────────────────────────────────
+// ─── Metadata types (constructed by the `register_map!` macro) ───────────────
 
 /// An enum variant exposed for the web UI.
 #[derive(Debug, Clone, Serialize)]
@@ -123,24 +169,11 @@ pub struct RegisterInfo {
     pub bitfields: Vec<BitfieldInfo>,
 }
 
-/// Full register map description returned by the API.
-#[derive(Debug, Clone, Serialize)]
-pub struct RegisterMapDescription {
-    /// Name of the register map struct.
-    pub name: &'static str,
-    /// Bus width in bytes.
-    pub bus_width: usize,
-    /// Physical base address.
-    pub base_address: usize,
-    /// All registers.
-    pub registers: Vec<RegisterInfo>,
-}
+// ─── Trait ───────────────────────────────────────────────────────────────────
 
-// ─── Traits ──────────────────────────────────────────────────────────────────
-
-/// Trait automatically implemented by [`register_map!`] when the `web` feature
-/// is enabled. Provides register metadata and raw read/write access for the
-/// web UI.
+/// Trait automatically implemented by [`register_map!`](crate::register_map)
+/// when the `web` feature is enabled. Provides register metadata and raw
+/// read/write access for the web UI.
 pub trait RegisterMapInfo {
     /// Name of the register map (struct name).
     fn map_name(&self) -> &'static str;
@@ -161,130 +194,14 @@ pub trait RegisterMapInfo {
     fn write_register(&mut self, offset: usize, value: u64) -> Option<()>;
 }
 
-/// Extension trait that provides the axum [`Router`].
-pub trait RegisterMapWeb: RegisterMapInfo + Send + 'static {}
-impl<T: RegisterMapInfo + Send + 'static> RegisterMapWeb for T {}
+// ─── Internal serialization helpers ──────────────────────────────────────────
 
-// ─── Auth ────────────────────────────────────────────────────────────────────
-
-/// A boxed authentication function: `(username, password) -> bool`.
-type AuthFn = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
-
-fn check_basic_auth(auth: &AuthFn, req: &Request<Body>) -> bool {
-    req.headers()
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic "))
-        .and_then(|b64| {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.decode(b64).ok()
-        })
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .map(|decoded| {
-            if let Some((user, pass)) = decoded.split_once(':') {
-                auth(user, pass)
-            } else {
-                false
-            }
-        })
-        .unwrap_or(false)
-}
-
-fn unauthorized_response() -> Response {
-    (
-        StatusCode::UNAUTHORIZED,
-        [("WWW-Authenticate", "Basic realm=\"ddevmem register map\"")],
-        "Unauthorized",
-    )
-        .into_response()
-}
-
-// ─── Single-map router ──────────────────────────────────────────────────────
-
-struct AppState<T: RegisterMapInfo + Send + 'static> {
-    regs: Arc<Mutex<T>>,
-    auth: Option<AuthFn>,
-}
-
-impl<T: RegisterMapInfo + Send + 'static> Clone for AppState<T> {
-    fn clone(&self) -> Self {
-        Self {
-            regs: self.regs.clone(),
-            auth: self.auth.clone(),
-        }
-    }
-}
-
-/// Create an axum [`Router`] serving the register-map web UI **without**
-/// authentication.
-///
-/// The router has no root path — nest it wherever you like:
-///
-/// ```rust,ignore
-/// let app = axum::Router::new()
-///     .nest("/registers/pwm", ddevmem::web::router(regs));
-/// ```
-pub fn router<T: RegisterMapInfo + Send + 'static>(regs: Arc<Mutex<T>>) -> Router {
-    build_single_router(AppState { regs, auth: None })
-}
-
-/// Create an axum [`Router`] serving the register-map web UI **with** HTTP
-/// Basic authentication.
-///
-/// `check` receives `(username, password)` and must return `true` to allow
-/// access.
-pub fn router_with_auth<T, F>(regs: Arc<Mutex<T>>, check: F) -> Router
-where
-    T: RegisterMapInfo + Send + 'static,
-    F: Fn(&str, &str) -> bool + Send + Sync + 'static,
-{
-    build_single_router(AppState {
-        regs,
-        auth: Some(Arc::new(check)),
-    })
-}
-
-fn build_single_router<T: RegisterMapInfo + Send + 'static>(state: AppState<T>) -> Router {
-    let api = Router::new()
-        .route("/info", get(api_info::<T>))
-        .route("/read", post(api_read::<T>))
-        .route("/write", post(api_write::<T>));
-
-    Router::new()
-        .route("/", get(index_page))
-        .nest("/api", api)
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware::<T>,
-        ))
-        .with_state(state)
-}
-
-async fn auth_middleware<T: RegisterMapInfo + Send + 'static>(
-    State(state): State<AppState<T>>,
-    req: Request<Body>,
-    next: Next,
-) -> Response {
-    if let Some(ref check) = state.auth {
-        if !check_basic_auth(check, &req) {
-            return unauthorized_response();
-        }
-    }
-    next.run(req).await
-}
-
-// ─── Single-map API handlers ────────────────────────────────────────────────
-
-async fn api_info<T: RegisterMapInfo + Send + 'static>(
-    State(state): State<AppState<T>>,
-) -> Json<RegisterMapDescription> {
-    let regs = state.regs.lock().await;
-    Json(RegisterMapDescription {
-        name: regs.map_name(),
-        bus_width: regs.bus_width(),
-        base_address: regs.base_address(),
-        registers: regs.registers(),
-    })
+#[derive(Serialize)]
+struct RegisterMapDescription {
+    name: &'static str,
+    bus_width: usize,
+    base_address: usize,
+    registers: Vec<RegisterInfo>,
 }
 
 #[derive(Deserialize)]
@@ -297,47 +214,78 @@ struct ReadResp {
     value: u64,
 }
 
-async fn api_read<T: RegisterMapInfo + Send + 'static>(
-    State(state): State<AppState<T>>,
-    Json(req): Json<ReadReq>,
-) -> Result<Json<ReadResp>, StatusCode> {
-    let regs = state.regs.lock().await;
-    regs.read_register(req.offset)
-        .map(|value| Json(ReadResp { value }))
-        .ok_or(StatusCode::BAD_REQUEST)
-}
-
 #[derive(Deserialize)]
 struct WriteReq {
     offset: usize,
     value: u64,
 }
 
-async fn api_write<T: RegisterMapInfo + Send + 'static>(
-    State(state): State<AppState<T>>,
-    Json(req): Json<WriteReq>,
-) -> StatusCode {
-    let mut regs = state.regs.lock().await;
-    match regs.write_register(req.offset, req.value) {
-        Some(()) => StatusCode::OK,
-        None => StatusCode::BAD_REQUEST,
-    }
+// ─── Auth ────────────────────────────────────────────────────────────────────
+
+/// Compare two strings in constant time.
+///
+/// Use this inside the closure passed to [`WebUi::with_auth`] when checking
+/// passwords or other secret material. A naive `==` exits at the first
+/// differing byte and lets an attacker recover the secret one byte at a time
+/// by timing responses.
+///
+/// ```
+/// # use ddevmem::web::ct_eq;
+/// assert!(ct_eq("hunter2", "hunter2"));
+/// assert!(!ct_eq("hunter2", "hunter3"));
+/// // Different lengths are still safe to compare:
+/// assert!(!ct_eq("admin", "administrator"));
+/// ```
+///
+/// When combining several checks, prefer the bitwise `&` operator over `&&`
+/// so that all comparisons run unconditionally:
+///
+/// ```ignore
+/// ct_eq(user, "admin") & ct_eq(pass, "hunter2")
+/// ```
+pub fn ct_eq(a: &str, b: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    a.as_bytes().ct_eq(b.as_bytes()).into()
+}
+
+/// Boxed future returned by an async authentication callback.
+pub type AuthFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
+
+type AuthFn = Arc<dyn Fn(String, String) -> AuthFuture + Send + Sync>;
+
+fn extract_basic_credentials(req: &Request<Body>) -> Option<(String, String)> {
+    let header = req.headers().get("Authorization")?.to_str().ok()?;
+    let b64 = header.strip_prefix("Basic ")?;
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    let decoded = String::from_utf8(bytes).ok()?;
+    let (user, pass) = decoded.split_once(':')?;
+    Some((user.to_owned(), pass.to_owned()))
+}
+
+fn unauthorized_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [("WWW-Authenticate", "Basic realm=\"ddevmem register map\"")],
+        "Unauthorized",
+    )
+        .into_response()
 }
 
 async fn index_page() -> Html<&'static str> {
     Html(include_str!("web_ui.html"))
 }
 
-// ─── Multi-map support ──────────────────────────────────────────────────────
+// ─── Builder ─────────────────────────────────────────────────────────────────
 
 type DynMap = Arc<Mutex<dyn RegisterMapInfo + Send>>;
 
-struct MultiMapState {
+struct WebUiState {
     maps: Vec<(String, DynMap)>,
     auth: Option<AuthFn>,
 }
 
-impl Clone for MultiMapState {
+impl Clone for WebUiState {
     fn clone(&self) -> Self {
         Self {
             maps: self.maps.clone(),
@@ -346,17 +294,16 @@ impl Clone for MultiMapState {
     }
 }
 
-/// Builder for hosting multiple register maps on a single page.
+/// Builder for hosting one or more register maps as a web UI.
 ///
-/// All maps are displayed together on one page. The API uses per-map slugs
-/// in the URL path (`/api/{slug}/info`, `/api/{slug}/read`, etc.).
-///
-/// The resulting router has no root path and can be nested freely:
+/// Each map is exposed under a URL slug. The resulting [`Router`] has no root
+/// path baked in and can be nested under any prefix.
 ///
 /// ```rust,no_run
 /// # use std::sync::Arc;
 /// # use tokio::sync::Mutex;
 /// # use ddevmem::{register_map, DevMem};
+/// # use ddevmem::web::WebUi;
 /// # register_map! { pub unsafe map Spi (u32) { 0x00 => rw cr: u32 } }
 /// # register_map! { pub unsafe map Gpio (u32) { 0x00 => rw data: u32 } }
 /// # async fn run() {
@@ -364,46 +311,36 @@ impl Clone for MultiMapState {
 /// # let d2 = unsafe { DevMem::new(0x0, Some(256)).unwrap() };
 /// # let spi = unsafe { Spi::new(Arc::new(d1)).unwrap() };
 /// # let gpio = unsafe { Gpio::new(Arc::new(d2)).unwrap() };
-/// let regs_router = ddevmem::web::multi_router()
-///     .add("spi", Arc::new(Mutex::new(spi)))
-///     .add("gpio", Arc::new(Mutex::new(gpio)))
-///     .build();
-///
-/// // Mount under a custom prefix:
-/// let app = axum::Router::new()
-///     .nest("/hw/regs", regs_router);
-///
-/// let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-/// axum::serve(listener, app).await.unwrap();
+/// let app = axum::Router::new().nest(
+///     "/hw/regs",
+///     WebUi::new()
+///         .add("spi", Arc::new(Mutex::new(spi)))
+///         .add("gpio", Arc::new(Mutex::new(gpio)))
+///         .with_auth(|u, p| async move { u == "admin" && p == "secret" })
+///         .build(),
+/// );
 /// # }
 /// ```
-pub struct MultiMapBuilder {
+pub struct WebUi {
     maps: Vec<(String, DynMap)>,
     auth: Option<AuthFn>,
 }
 
-/// Create a [`MultiMapBuilder`] for hosting several register maps **without**
-/// authentication.
-pub fn multi_router() -> MultiMapBuilder {
-    MultiMapBuilder {
-        maps: Vec::new(),
-        auth: None,
+impl Default for WebUi {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-/// Create a [`MultiMapBuilder`] for hosting several register maps **with**
-/// HTTP Basic authentication.
-pub fn multi_router_with_auth<F>(check: F) -> MultiMapBuilder
-where
-    F: Fn(&str, &str) -> bool + Send + Sync + 'static,
-{
-    MultiMapBuilder {
-        maps: Vec::new(),
-        auth: Some(Arc::new(check)),
+impl WebUi {
+    /// Create an empty builder.
+    pub fn new() -> Self {
+        Self {
+            maps: Vec::new(),
+            auth: None,
+        }
     }
-}
 
-impl MultiMapBuilder {
     /// Register a map under the given URL slug (e.g. `"spi"`, `"gpio"`).
     ///
     /// The slug must consist of ASCII alphanumerics, hyphens, or underscores.
@@ -428,7 +365,39 @@ impl MultiMapBuilder {
         self
     }
 
-    /// Consume the builder and produce an axum [`Router`].
+    /// Require HTTP Basic authentication on every endpoint. `check` is an
+    /// async callback that receives `(username, password)` and must resolve
+    /// to `true` to allow access. Because it is async, it can perform I/O
+    /// such as querying a database or an external auth service.
+    ///
+    /// ```rust,no_run
+    /// # use std::sync::Arc;
+    /// # use tokio::sync::Mutex;
+    /// # use ddevmem::{register_map, DevMem};
+    /// # use ddevmem::web::WebUi;
+    /// # register_map! { pub unsafe map R (u32) { 0x00 => rw x: u32 } }
+    /// # async fn lookup_user(_u: &str, _p: &str) -> bool { true }
+    /// # async fn run() {
+    /// # let d = unsafe { DevMem::new(0x0, Some(256)).unwrap() };
+    /// # let r = unsafe { R::new(Arc::new(d)).unwrap() };
+    /// let app = WebUi::new()
+    ///     .add("r", Arc::new(Mutex::new(r)))
+    ///     .with_auth(|user, pass| async move {
+    ///         lookup_user(&user, &pass).await
+    ///     })
+    ///     .build();
+    /// # }
+    /// ```
+    pub fn with_auth<F, Fut>(mut self, check: F) -> Self
+    where
+        F: Fn(String, String) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = bool> + Send + 'static,
+    {
+        self.auth = Some(Arc::new(move |u, p| Box::pin(check(u, p)) as AuthFuture));
+        self
+    }
+
+    /// Consume the builder and produce an [`axum::Router`].
     ///
     /// The router serves:
     /// - `GET /` — single HTML page showing all maps
@@ -437,44 +406,45 @@ impl MultiMapBuilder {
     /// - `POST /api/{slug}/read` — read a register
     /// - `POST /api/{slug}/write` — write a register
     pub fn build(self) -> Router {
-        let state = MultiMapState {
+        let state = WebUiState {
             maps: self.maps,
             auth: self.auth,
         };
 
         let api = Router::new()
-            .route("/maps", get(multi_api_list))
-            .route("/{slug}/info", get(multi_api_info))
-            .route("/{slug}/read", post(multi_api_read))
-            .route("/{slug}/write", post(multi_api_write));
+            .route("/maps", get(api_list))
+            .route("/{slug}/info", get(api_info))
+            .route("/{slug}/read", post(api_read))
+            .route("/{slug}/write", post(api_write));
 
         Router::new()
-            .route("/", get(multi_index_page))
+            .route("/", get(index_page))
             .nest("/api", api)
             .layer(middleware::from_fn_with_state(
                 state.clone(),
-                multi_auth_middleware,
+                auth_middleware,
             ))
             .with_state(state)
     }
 }
 
-// ─── Multi-map auth middleware ───────────────────────────────────────────────
-
-async fn multi_auth_middleware(
-    State(state): State<MultiMapState>,
+async fn auth_middleware(
+    State(state): State<WebUiState>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    if let Some(ref check) = state.auth {
-        if !check_basic_auth(check, &req) {
+    if let Some(check) = state.auth.clone() {
+        let creds = extract_basic_credentials(&req);
+        let allowed = match creds {
+            Some((u, p)) => check(u, p).await,
+            None => false,
+        };
+        if !allowed {
             return unauthorized_response();
         }
     }
     next.run(req).await
 }
-
-// ─── Multi-map API handlers ─────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct MapEntry {
@@ -482,7 +452,7 @@ struct MapEntry {
     name: String,
 }
 
-async fn multi_api_list(State(state): State<MultiMapState>) -> Json<Vec<MapEntry>> {
+async fn api_list(State(state): State<WebUiState>) -> Json<Vec<MapEntry>> {
     let mut entries = Vec::with_capacity(state.maps.len());
     for (slug, regs) in &state.maps {
         let regs = regs.lock().await;
@@ -501,8 +471,8 @@ fn find_map<'a>(maps: &'a [(String, DynMap)], slug: &str) -> Result<&'a DynMap, 
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-async fn multi_api_info(
-    State(state): State<MultiMapState>,
+async fn api_info(
+    State(state): State<WebUiState>,
     axum::extract::Path(slug): axum::extract::Path<String>,
 ) -> Result<Json<RegisterMapDescription>, StatusCode> {
     let regs = find_map(&state.maps, &slug)?;
@@ -515,8 +485,8 @@ async fn multi_api_info(
     }))
 }
 
-async fn multi_api_read(
-    State(state): State<MultiMapState>,
+async fn api_read(
+    State(state): State<WebUiState>,
     axum::extract::Path(slug): axum::extract::Path<String>,
     Json(req): Json<ReadReq>,
 ) -> Result<Json<ReadResp>, StatusCode> {
@@ -527,8 +497,8 @@ async fn multi_api_read(
         .ok_or(StatusCode::BAD_REQUEST)
 }
 
-async fn multi_api_write(
-    State(state): State<MultiMapState>,
+async fn api_write(
+    State(state): State<WebUiState>,
     axum::extract::Path(slug): axum::extract::Path<String>,
     Json(req): Json<WriteReq>,
 ) -> Result<StatusCode, StatusCode> {
@@ -537,10 +507,4 @@ async fn multi_api_write(
     regs.write_register(req.offset, req.value)
         .map(|()| StatusCode::OK)
         .ok_or(StatusCode::BAD_REQUEST)
-}
-
-// ─── Multi-map HTML page ────────────────────────────────────────────────────
-
-async fn multi_index_page() -> Html<&'static str> {
-    Html(include_str!("web_ui.html"))
 }
