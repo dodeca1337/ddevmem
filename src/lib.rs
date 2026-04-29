@@ -7,8 +7,6 @@
 //!
 //! - [`DevMem`] — memory-mapped access to a physical address range with
 //!   volatile read, write, and modify operations.
-//! - [`Reg`](reg::Reg) / [`SliceReg`](reg::SliceReg) — typed register handles
-//!   with compile-time read/write control (requires the `reg` feature).
 //! - [`register_map!`] — declarative macro for defining named register maps
 //!   with optional bus-width enforcement, bitfield accessors, and typed
 //!   bitfields (`as bool` / `as u8` / `as enum`) (requires the
@@ -20,7 +18,6 @@
 //! |------------------|---------|-------------|
 //! | `device`         | yes     | Real `/dev/mem` backend via `memmap2`. |
 //! | `emulator`       | no      | In-memory `Vec<u8>` backend for testing without hardware. |
-//! | `reg`            | no      | [`Reg`](reg::Reg) and [`SliceReg`](reg::SliceReg) types. |
 //! | `register-map`   | yes     | [`register_map!`] macro with bitfields and typed accessors. |
 //! | `web`            | no      | Web UI for viewing/editing registers via [`axum`]. |
 //!
@@ -69,9 +66,6 @@ mod devmem;
 #[cfg(any(feature = "device", feature = "emulator"))]
 #[doc(inline)]
 pub use devmem::{DevMem, Error};
-
-#[cfg(all(feature = "reg", any(feature = "device", feature = "emulator")))]
-pub mod reg;
 
 #[cfg(feature = "web")]
 pub mod web;

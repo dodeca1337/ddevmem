@@ -11,7 +11,6 @@ with volatile read/write semantics suitable for memory-mapped I/O (MMIO).
 | -------------- | ------- | ------------------------------------------------------------------------------ |
 | `device`       | ✓       | Real `/dev/mem` backend via `memmap2`.                                         |
 | `emulator`     |         | Heap-backed `Vec<u8>` for testing without hardware.                            |
-| `reg`          |         | Typed `Reg<T>` / `SliceReg<T>` register handles.                               |
 | `register-map` | ✓       | Declarative `register_map!` macro with optional bitfields and typed accessors. |
 | `web`          |         | Web UI for viewing/editing registers via `axum` (optional auth).               |
 
@@ -277,32 +276,6 @@ When a type suffix is present the return / argument type changes accordingly:
 | `as bool`      | `bool`         | `bool`         |
 | `as u8` (etc.) | `u8`           | `u8`           |
 | `as enum Name` | `Name`         | `Name`         |
-
-### Typed registers (`reg` feature)
-
-```rust,no_run
-use std::sync::Arc;
-use ddevmem::DevMem;
-use ddevmem::reg::{Reg, ReadOnlyReg, SliceReg};
-
-let devmem = Arc::new(unsafe { DevMem::new(0x4000_0000, Some(0x100)).unwrap() });
-
-// Read-write register at offset 0x00
-let mut ctrl = unsafe { Reg::<u32>::new(devmem.clone(), 0x00).unwrap() };
-ctrl.write(0x01);
-let val = ctrl.read();
-ctrl.modify(|v| v | (1 << 4));
-
-// Read-only register
-let status = unsafe { ReadOnlyReg::<u32>::new(devmem.clone(), 0x04).unwrap() };
-let s = status.read();
-// status.write(0); // compile error — WRITE = false
-
-// Array of 8 registers starting at offset 0x10
-let mut buf = unsafe { SliceReg::<u32>::new(devmem, 0x10, 8).unwrap() };
-buf.write_at(0, 0xAA);
-let first = buf.read_at(0);
-```
 
 ### Web UI (`web` feature)
 
