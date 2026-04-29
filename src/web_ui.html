@@ -4,53 +4,454 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ddevmem — Register Map</title>
+<script>
+  // Apply saved theme as early as possible to avoid a flash.
+  (function() {
+    var t = localStorage.getItem('ddevmem-theme');
+    if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'g10' : 'g100';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
 <style>
-  :root {
-    --bg: #1e1e2e; --surface: #282840; --border: #3a3a5c;
-    --text: #cdd6f4; --text2: #9399b2; --accent: #89b4fa;
-    --green: #a6e3a1; --red: #f38ba8; --yellow: #f9e2af;
-    --orange: #fab387;
+  /*
+   * Carbon-inspired token system. Two themes:
+   *   data-theme="g10"   → light (Gray 10 theme)
+   *   data-theme="g100"  → dark  (Gray 100 theme)
+   * The :root block holds the dark defaults so themes can be flipped via
+   * the [data-theme] attribute on <html>.
+   */
+  :root, [data-theme="g100"] {
+    --background: #161616;
+    --layer-01: #262626;
+    --layer-02: #393939;
+    --layer-hover: #353535;
+    --layer-active: #525252;
+    --field-01: #262626;
+    --field-02: #393939;
+    --field-hover: #353535;
+    --border-subtle: #393939;
+    --border-strong: #6f6f6f;
+    --text-primary: #f4f4f4;
+    --text-secondary: #c6c6c6;
+    --text-helper: #a8a8a8;
+    --text-placeholder: #6f6f6f;
+    --text-on-color: #ffffff;
+    --link-primary: #78a9ff;
+    --link-hover: #a6c8ff;
+    --focus: #ffffff;
+    /* Component tokens — same hue across themes for semantic consistency */
+    --button-primary: #0f62fe;
+    --button-primary-hover: #0353e9;
+    --button-primary-active: #002d9c;
+    --button-secondary: #6f6f6f;        /* lighter in dark theme for contrast on dark bg */
+    --button-secondary-hover: #5e5e5e;
+    --button-secondary-active: #393939;
+    --button-tertiary: #ffffff;          /* on dark bg, tertiary uses white border/text */
+    --button-tertiary-hover: #f4f4f4;
+    --button-tertiary-active: #c6c6c6;
+    --button-separator: #161616;         /* 1px line between buttons in a btn-set */
+    /* Tag colours: dark theme uses step-20 text on step-70 background.
+       rw → Blue, ro → Cool Gray, wo → Magenta. */
+    --tag-bg-rw: #0043ce; --tag-fg-rw: #d0e2ff;
+    --tag-bg-ro: #4d5358; --tag-fg-ro: #dde1e6;
+    --tag-bg-wo: #9f1853; --tag-fg-wo: #ffd6e8;
+    --support-success: #42be65;
   }
+
+  [data-theme="g10"] {
+    --background: #ffffff;
+    --layer-01: #f4f4f4;
+    --layer-02: #ffffff;
+    --layer-hover: #e8e8e8;
+    --layer-active: #c6c6c6;
+    --field-01: #f4f4f4;
+    --field-02: #ffffff;
+    --field-hover: #e8e8e8;
+    --border-subtle: #e0e0e0;
+    --border-strong: #8d8d8d;
+    --text-primary: #161616;
+    --text-secondary: #525252;
+    --text-helper: #6f6f6f;
+    --text-placeholder: #a8a8a8;
+    --text-on-color: #ffffff;
+    --link-primary: #0f62fe;
+    --link-hover: #0043ce;
+    --focus: #0f62fe;
+    --button-primary: #0f62fe;
+    --button-primary-hover: #0353e9;
+    --button-primary-active: #002d9c;
+    --button-secondary: #393939;        /* Gray 80 per Carbon spec */
+    --button-secondary-hover: #4c4c4c;
+    --button-secondary-active: #6f6f6f;
+    --button-tertiary: #0f62fe;          /* on light bg, tertiary uses Blue 60 */
+    --button-tertiary-hover: #0353e9;
+    --button-tertiary-active: #002d9c;
+    --button-separator: #e0e0e0;         /* 1px line between buttons in a btn-set */
+    /* Tag colours: light theme uses step-70 text on step-20 background. */
+    --tag-bg-rw: #d0e2ff; --tag-fg-rw: #0043ce;
+    --tag-bg-ro: #dde1e6; --tag-fg-ro: #4d5358;
+    --tag-bg-wo: #ffd6e8; --tag-fg-wo: #9f1853;
+    --support-success: #24a148;
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'JetBrains Mono', 'Fira Code', monospace; background: var(--bg); color: var(--text); padding: 1rem; }
-  h1 { color: var(--accent); margin-bottom: .25rem; font-size: 1.3rem; }
-  h2 { color: var(--accent); margin: 1.5rem 0 .25rem; font-size: 1.1rem; border-bottom: 1px solid var(--border); padding-bottom: .25rem; }
-  .meta { color: var(--text2); font-size: .8rem; margin-bottom: .5rem; }
-  .reg-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
-  .reg-header { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: .5rem; }
-  .reg-name { font-weight: 700; font-size: 1.05rem; color: var(--accent); }
-  .reg-offset { color: var(--text2); font-size: .8rem; }
-  .badge { font-size: .7rem; padding: 2px 6px; border-radius: 4px; font-weight: 600; text-transform: uppercase; }
-  .badge-rw { background: var(--green); color: #1e1e2e; }
-  .badge-ro { background: var(--yellow); color: #1e1e2e; }
-  .badge-wo { background: var(--orange); color: #1e1e2e; }
-  .reg-doc { color: var(--text2); font-size: .8rem; margin-bottom: .5rem; font-style: italic; }
-  .reg-value { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap; }
-  .reg-value input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-family: inherit; font-size: .85rem; width: 14ch; }
-  .reg-value .hex { color: var(--text2); font-size: .8rem; min-width: 12ch; }
-  button { background: var(--accent); color: var(--bg); border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: .8rem; font-weight: 600; }
-  button:hover { opacity: .85; }
-  button.write-btn { background: var(--orange); }
-  .bitfields { margin-top: .5rem; }
-  .bf-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
-  .bf-table th, .bf-table td { padding: 3px 8px; border: 1px solid var(--border); text-align: left; }
-  .bf-table th { background: var(--bg); color: var(--text2); font-weight: 600; }
-  .bf-val { color: var(--green); font-weight: 600; }
-  .bf-doc { color: var(--text2); font-style: italic; }
-  .bf-input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 2px 6px; border-radius: 3px; font-family: inherit; font-size: .8rem; width: 8ch; }
-  select.bf-input { width: auto; min-width: 10ch; }
-  .error { color: var(--red); font-size: .8rem; }
-  .status { font-size: .75rem; color: var(--text2); margin-left: .5rem; }
-  #auto-refresh { margin: 0 .5rem; }
-  .toolbar { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
-  .toolbar label { font-size: .8rem; color: var(--text2); cursor: pointer; }
-  .layout { display: flex; gap: 1rem; }
-  .sidebar { position: sticky; top: 1rem; align-self: flex-start; min-width: 180px; max-width: 220px; max-height: calc(100vh - 2rem); overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: .5rem; display: none; }
+  html, body { background: var(--background); color: var(--text-primary); }
+  body {
+    font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+    padding: 1.5rem;
+    -webkit-font-smoothing: antialiased;
+    transition: background-color 70ms, color 70ms;
+  }
+  code, kbd, .mono, input, select, .reg-offset, .hex, .bf-val {
+    font-family: 'IBM Plex Mono', ui-monospace, 'JetBrains Mono', 'Fira Code', monospace;
+  }
+
+  h1 { font-size: 1.75rem; font-weight: 300; letter-spacing: -.01em; margin-bottom: .25rem; }
+  h2 {
+    font-size: 1.25rem; font-weight: 400; margin: 2rem 0 .5rem;
+    padding: .5rem 0; border-bottom: 1px solid var(--border-subtle);
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  }
+  h2 .map-dump { font-size: .75rem; }
+  .meta { color: var(--text-helper); font-size: .75rem; margin-bottom: 1rem; letter-spacing: .02em; }
+
+  /* Tile (register card) */
+  .reg-card {
+    background: var(--layer-01);
+    border: 1px solid transparent;
+    border-left: 2px solid transparent;
+    padding: 1rem 1.25rem;
+    margin-bottom: 2px;
+    transition: background-color 70ms, border-color 70ms;
+  }
+  .reg-header { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: .25rem; }
+  .reg-name { font-weight: 600; font-size: 1rem; color: var(--text-primary); }
+  .reg-offset { color: var(--text-helper); font-size: .75rem; }
+  .reg-doc { color: var(--text-secondary); font-size: .8125rem; margin: .25rem 0 .75rem; }
+
+  /*
+   * Tag (Carbon spec, size sm = 18px, pill shape). rw/ro/wo carry no
+   * "alarm" semantics, so we use Blue / Cool Gray / Magenta from the Carbon
+   * tag palette (step-70 text on step-20 bg in light themes; inverted in
+   * dark). Sentence case per Carbon content guidelines.
+   */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 16px;
+    font-size: .75rem;            /* 12px — $label-01 */
+    line-height: 1.3334;
+    font-weight: 400;
+    letter-spacing: .32px;
+    text-transform: uppercase;    /* short access labels read better caps */
+  }
+  .badge-rw { background: var(--tag-bg-rw); color: var(--tag-fg-rw); }
+  .badge-ro { background: var(--tag-bg-ro); color: var(--tag-fg-ro); }
+  .badge-wo { background: var(--tag-bg-wo); color: var(--tag-fg-wo); }
+
+  /* Text input — Carbon style: square, bottom border, focus inset outline */
+  input[type="text"], input:not([type]), select, .bf-input {
+    background: var(--field-01);
+    color: var(--text-primary);
+    border: 0;
+    border-bottom: 1px solid var(--border-strong);
+    padding: 6px 10px;
+    font-size: .8125rem;
+    height: 2rem;
+    outline: none;
+    transition: background-color 70ms, border-color 70ms, outline-color 70ms;
+    min-width: 0;
+  }
+  input::placeholder { color: var(--text-placeholder); }
+  input:hover, select:hover, .bf-input:hover { background: var(--field-hover); }
+  input:focus, select:focus, .bf-input:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+    border-bottom-color: transparent;
+  }
+  .reg-value input { width: 16ch; }
+  .bf-input { height: 1.75rem; padding: 4px 8px; width: 9ch; }
+
+  /* Set-cell layout: input/select stretches, the Set button always lands at
+     the right edge of the column so buttons line up across rows. */
+  .bf-set { display: flex; gap: .5rem; align-items: center; }
+  .bf-set .bf-input { flex: 1 1 auto; width: auto; min-width: 0; }
+  .bf-set > button { flex: 0 0 auto; }
+
+  select, select.bf-input {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-repeat: no-repeat;
+    background-position: right .75rem center;
+    cursor: pointer;
+    text-overflow: ellipsis;
+    padding-right: 2rem;          /* 12 px chevron-edge + 16 px chevron + 4 px gap */
+  }
+  select::-ms-expand { display: none; }
+  select.bf-input {
+    width: auto;
+    min-width: 11ch;
+    height: 1.75rem;
+    padding: 4px 2rem 4px 8px;
+    background-position: right .5rem center;
+  }
+
+  .reg-value { display: flex; align-items: center; gap: .5rem; margin: .5rem 0; flex-wrap: wrap; }
+  /* Carbon `.cds--btn-set` — adjacent buttons sit flush against each other,
+     separated only by a 1px box-shadow line ($button-separator). The group
+     gets its own `.btn-set` wrapper to override the .reg-value flex gap. */
+  .btn-set { display: inline-flex; }
+  .btn-set > button:not(:first-of-type):not(:focus) {
+    box-shadow: -1px 0 0 0 var(--button-separator);
+  }
+  .btn-set > button:focus + button:not(:focus) { box-shadow: none; }
+  .reg-value .hex { color: var(--text-secondary); font-size: .8125rem; min-width: 12ch; }
+
+  /*
+   * Buttons — match @carbon/styles/scss/components/button/_button.scss
+   *
+   *  default        → Primary    (Write, Set)
+   *  .btn-secondary → Secondary  (Read)
+   *  .btn-tertiary  → Tertiary   (Refresh All, Dump All, theme toggle)
+   *
+   * Carbon spec (size sm = 32 px):
+   *   - inline-flex, justify-content: space-between, text-align: start
+   *     → label is left-aligned, icon (if any) sits on the right
+   *   - asymmetric padding-inline: 11px on the start side, 51px on the end
+   *     side (= padding-inline * 3 + 16px − 1px); reserves icon space and
+   *     gives the signature wide-button look even for label-only buttons.
+   *   - body-compact-01: 14 px / 18 px line-height, weight 400, letter-spacing .16px
+   *   - border: 1px solid (matches bg for primary/secondary, transparent for ghost)
+   *   - focus: double inset box-shadow (focus colour + background), no outline
+   */
+  button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    text-align: start;
+    background: var(--button-primary);
+    color: var(--text-on-color);
+    border: 1px solid var(--button-primary);
+    /* size sm: padding-inline 11px / 51px, height 32px */
+    padding: 0 3.1875rem 0 .6875rem;
+    min-height: 2rem;
+    min-width: max-content;
+    max-width: 20rem;
+    font-family: inherit;
+    font-size: .875rem;          /* 14px — body-compact-01 */
+    line-height: 1.28572;         /* 18 / 14 */
+    font-weight: 400;
+    letter-spacing: .16px;
+    cursor: pointer;
+    vertical-align: top;
+    transition: background-color 70ms cubic-bezier(.2,0,.38,.9),
+                box-shadow 70ms cubic-bezier(.2,0,.38,.9),
+                border-color 70ms cubic-bezier(.2,0,.38,.9),
+                color 70ms cubic-bezier(.2,0,.38,.9);
+  }
+  button:hover  { background: var(--button-primary-hover); border-color: var(--button-primary-hover); }
+  button:active { background: var(--button-primary-active); border-color: var(--button-primary-active); }
+  /*
+   * Focus ring (Carbon spec, button-theme mixin):
+   *   border-color: $button-focus-color;
+   *   box-shadow:
+   *     inset 0 0 0 $button-outline-width  $button-focus-color,  // 1 px
+   *     inset 0 0 0 $button-border-width   $background;          // 2 px
+   *
+   * The first (smaller) focus shadow paints on top of the second (larger)
+   * background shadow. Net visible: 1 px focus stroke at the very edge +
+   * 1 px background ring just inside it. With the spreads swapped the focus
+   * shadow would fully cover the contrast ring — e.g. on light-theme Primary
+   * (focus colour == button colour) the indicator disappears entirely.
+   */
+  button:focus  {
+    outline: none;
+    border-color: var(--focus);
+    box-shadow: inset 0 0 0 1px var(--focus),
+                inset 0 0 0 2px var(--background);
+  }
+
+  button.btn-secondary {
+    background: var(--button-secondary);
+    color: var(--text-on-color);
+    border-color: var(--button-secondary);
+  }
+  button.btn-secondary:hover  { background: var(--button-secondary-hover); border-color: var(--button-secondary-hover); }
+  button.btn-secondary:active { background: var(--button-secondary-active); border-color: var(--button-secondary-active); }
+
+  button.btn-tertiary {
+    background: transparent;
+    color: var(--button-tertiary);
+    border-color: var(--button-tertiary);
+  }
+  button.btn-tertiary:hover {
+    background: var(--button-tertiary-hover);
+    color: var(--background);
+    border-color: var(--button-tertiary-hover);
+  }
+  button.btn-tertiary:active {
+    background: var(--button-tertiary-active);
+    color: var(--background);
+    border-color: var(--button-tertiary-active);
+  }
+
+  /*
+   * Ghost button. Carbon recommends ghost over tertiary for toolbar / page-
+   * level supplementary actions when the page already has primary buttons
+   * (see https://carbondesignsystem.com/components/button/usage,
+   * “Ghost buttons for data table actions”).
+   *   - transparent bg + border
+   *   - label colour: $link-primary (Blue 60)
+   *   - hover bg: $background-hover; active bg: $background-active
+   *   - same 32 px height as other sm buttons but symmetric padding
+   */
+  button.btn-ghost {
+    background: transparent;
+    color: var(--link-primary);
+    border-color: transparent;
+    /* ghost: 15px on the start side, 15px on the end side (density 16 - 1) */
+    padding: 0 .9375rem;
+  }
+  button.btn-ghost:hover  { background: var(--layer-hover);  color: var(--link-hover); border-color: transparent; }
+  button.btn-ghost:active { background: var(--layer-active); color: var(--link-hover); border-color: transparent; }
+  /* Ghost buttons have no border to absorb focus, so Carbon uses a single
+     1 px focus stroke (no inner bg ring, since the button bg is transparent
+     and the inner ring would not contrast against the page). */
+  button.btn-ghost:focus  {
+    border-color: var(--focus);
+    box-shadow: inset 0 0 0 1px var(--focus);
+  }
+
+  /* Icon-only ghost button (Carbon `.cds--btn--icon-only`): square 2 rem,
+     symmetric padding, centred 16 px glyph. */
+  button.btn-icon-only {
+    width: 2rem; height: 2rem;
+    padding: 0;
+    justify-content: center;
+  }
+  button.btn-icon-only svg { width: 16px; height: 16px; fill: currentColor; }
+
+  /* Bitfield data table */
+  .bitfields { margin-top: .75rem; }
+  .bf-table { width: 100%; border-collapse: collapse; font-size: .8125rem; background: var(--layer-01); }
+  .bf-table th, .bf-table td { padding: .5rem .75rem; text-align: left; vertical-align: middle; border: 0; }
+  .bf-table thead th {
+    background: var(--layer-02); color: var(--text-secondary);
+    font-weight: 600; font-size: .75rem; letter-spacing: .02em;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .bf-table tbody tr { border-bottom: 1px solid var(--border-subtle); }
+  .bf-table tbody tr:last-child { border-bottom: 0; }
+  .bf-table tbody tr:hover { background: var(--layer-hover); }
+  .bf-val { color: var(--text-primary); font-weight: 400; }
+  .bf-doc { color: var(--text-helper); }
+
+  /* Status / messages */
+  .error { color: #da1e28; font-size: .75rem; }
+  .status { font-size: .75rem; color: var(--text-helper); margin-left: .5rem; }
+
+  /* Toolbar */
+  .toolbar {
+    display: flex; align-items: center; gap: .5rem;
+    margin: 1rem 0 1.25rem; flex-wrap: wrap;
+    padding: .5rem 0;
+    border-top: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .toolbar .spacer { flex: 1; }
+  .toolbar label { font-size: .8125rem; color: var(--text-secondary); cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: .5rem; }
+
+  /* Checkbox */
+  input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none;
+    width: 1rem; height: 1rem;
+    background: transparent;
+    border: 1px solid var(--text-secondary);
+    margin: 0; padding: 0;
+    position: relative; cursor: pointer;
+    transition: background-color 70ms, border-color 70ms;
+  }
+  input[type="checkbox"]:hover { border-color: var(--text-primary); }
+  input[type="checkbox"]:checked { background: var(--text-primary); border-color: var(--text-primary); }
+  input[type="checkbox"]:checked::after {
+    content: ''; position: absolute;
+    left: 3px; top: 0px;
+    width: 5px; height: 9px;
+    border: solid var(--background);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  input[type="checkbox"]:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+  /* Layout + sidebar (tree-view) */
+  .layout { display: flex; gap: 1.5rem; }
+  .sidebar {
+    position: sticky; top: 1rem; align-self: flex-start;
+    min-width: 200px; max-width: 240px;
+    max-height: calc(100vh - 2rem); overflow-y: auto;
+    background: var(--layer-01);
+    border-left: 1px solid var(--border-subtle);
+    padding: .25rem 0;
+    display: none;
+  }
   .sidebar.visible { display: block; }
-  .sidebar a { display: block; padding: 4px 8px; color: var(--text); text-decoration: none; font-size: .78rem; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sidebar a:hover, .sidebar a.active { background: var(--bg); color: var(--accent); }
-  .sidebar .nav-heading { color: var(--accent); font-weight: 700; font-size: .8rem; padding: 6px 8px 2px; }
+  .sidebar a {
+    display: flex; align-items: baseline; gap: .5rem;
+    padding: .375rem .75rem .375rem 1rem;
+    color: var(--text-secondary); text-decoration: none;
+    font-size: .8125rem;
+    white-space: nowrap; overflow: hidden;
+    border-left: 2px solid transparent;
+    transition: background-color 70ms, color 70ms, border-color 70ms;
+  }
+  .sidebar a .nav-name { overflow: hidden; text-overflow: ellipsis; }
+  .sidebar a .nav-addr {
+    margin-left: auto;
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: .6875rem; color: var(--text-helper);
+    flex-shrink: 0;
+  }
+  .sidebar a:hover .nav-addr,
+  .sidebar a.active .nav-addr { color: var(--text-secondary); }
+  .sidebar a:hover { background: var(--layer-hover); color: var(--text-primary); }
+  .sidebar a.active {
+    background: var(--layer-02); color: var(--text-primary);
+    border-left-color: var(--button-primary);
+    font-weight: 600;
+  }
+  .sidebar .nav-heading {
+    color: var(--text-helper);
+    font-weight: 600; font-size: .6875rem; letter-spacing: .04em; text-transform: uppercase;
+    padding: .75rem .75rem .125rem 1rem;
+  }
+  .sidebar .nav-base {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: .6875rem; color: var(--text-helper);
+    padding: 0 .75rem .25rem 1rem;
+    text-transform: none; letter-spacing: 0; font-weight: 400;
+  }
+  .sidebar::-webkit-scrollbar { width: 8px; }
+  .sidebar::-webkit-scrollbar-thumb { background: var(--border-subtle); }
+  .sidebar::-webkit-scrollbar-track { background: transparent; }
+
   .main-content { flex: 1; min-width: 0; }
+
+  a { color: var(--link-primary); }
+  a:hover { color: var(--link-hover); }
+
+  /* Drop-down options. Native <option> only allows colour + bg. */
+  option {
+    background: var(--layer-hover);
+    color: var(--text-primary);
+  }
+
+  ::selection { background: var(--button-primary); color: var(--text-on-color); }
 </style>
 </head>
 <body>
@@ -59,10 +460,12 @@
 <div class="meta" id="meta"></div>
 
 <div class="toolbar">
-  <button onclick="refreshAll()">Refresh All</button>
-  <button onclick="dumpAll()">Dump All</button>
+  <button class="btn-ghost" onclick="refreshAll()">Refresh all</button>
+  <button class="btn-ghost" onclick="dumpAll()">Dump all</button>
   <label><input type="checkbox" id="auto-refresh"> Auto-refresh (1s)</label>
   <span class="status" id="global-status"></span>
+  <span class="spacer"></span>
+  <button class="btn-ghost btn-icon-only" id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme" title="Toggle theme"></button>
 </div>
 
 <div class="layout">
@@ -160,7 +563,9 @@ function renderAll(showHeaders) {
 
     let html = '';
     if (showHeaders) {
-      html += '<h2>' + escHtml(info.name) + '</h2>';
+      html += '<h2>' + escHtml(info.name)
+            + '<button class="btn-ghost map-dump" onclick="dumpMap(\'' + map.slug + '\')">Dump</button>'
+            + '</h2>';
       html += '<div class="meta">' + escHtml(map.slug) + ' · Base: ' + hexStr(info.base_address, 32)
             + ' · Bus: ' + (info.bus_width * 8) + '-bit · ' + info.registers.length + ' register(s)</div>';
     }
@@ -180,11 +585,20 @@ function renderAll(showHeaders) {
         html += '<span>Value:</span><span class="hex" id="val-' + uid + '">—</span>';
       }
       if (reg.access !== 'ro') {
-        html += '<input id="inp-' + uid + '" placeholder="hex value">'
-              + '<button class="write-btn" onclick="writeReg(\'' + map.slug + '\',' + reg.offset + ',' + reg.width + ')">Write</button>';
+        html += '<input id="inp-' + uid + '" placeholder="hex value">';
       }
-      if (reg.access !== 'wo') {
-        html += '<button onclick="readReg(\'' + map.slug + '\',' + reg.offset + ',' + reg.width + ')">Read</button>';
+      // Write + Read form a Carbon btn-set (flush, 1px separator).
+      const hasWrite = reg.access !== 'ro';
+      const hasRead  = reg.access !== 'wo';
+      if (hasWrite || hasRead) {
+        html += '<div class="btn-set">';
+        if (hasWrite) {
+          html += '<button onclick="writeReg(\'' + map.slug + '\',' + reg.offset + ',' + reg.width + ')">Write</button>';
+        }
+        if (hasRead) {
+          html += '<button class="btn-secondary" onclick="readReg(\'' + map.slug + '\',' + reg.offset + ',' + reg.width + ')">Read</button>';
+        }
+        html += '</div>';
       }
       html += '<span class="status" id="st-' + uid + '"></span></div>';
 
@@ -199,7 +613,7 @@ function renderAll(showHeaders) {
           html += '<tr><td>' + escHtml(bf.name) + '</td><td>' + bits + '</td>'
                 + '<td class="bf-val" id="bf-' + bfid + '">—</td>';
           if (reg.access !== 'ro') {
-            html += '<td>';
+            html += '<td><div class="bf-set">';
             if (bf.variants && bf.variants.length > 0) {
               html += '<select class="bf-input" id="bfi-' + bfid + '">';
               for (const v of bf.variants) {
@@ -209,7 +623,7 @@ function renderAll(showHeaders) {
             } else {
               html += '<input class="bf-input" id="bfi-' + bfid + '" placeholder="val">';
             }
-            html += ' <button onclick="writeBitfield(\'' + map.slug + '\',' + reg.offset + ',' + bf.lo + ',' + bf.hi + ',\'' + bf.name + '\',' + reg.width + ')">Set</button></td>';
+            html += '<button onclick="writeBitfield(\'' + map.slug + '\',' + reg.offset + ',' + bf.lo + ',' + bf.hi + ',\'' + bf.name + '\',' + reg.width + ')">Set</button></div></td>';
           }
           html += '<td class="bf-doc">' + escHtml(bf.doc) + '</td></tr>';
         }
@@ -226,16 +640,106 @@ function renderAll(showHeaders) {
   let navHtml = '';
   for (const map of allMaps) {
     const info = map.info;
-    navHtml += '<div class="nav-heading">' + escHtml(info.name) + '</div>';
+    if (allMaps.length > 1 || map.slug !== '_') {
+      navHtml += '<div class="nav-heading">' + escHtml(info.name) + '</div>';
+    }
+    navHtml += '<div class="nav-base" title="Base address">Base ' + hexStr(info.base_address, 32) + '</div>';
     for (const reg of info.registers) {
       const uid = map.slug + '-' + reg.offset;
       navHtml += '<a href="#reg-' + uid + '" title="' + escHtml(reg.name) + ' ' + hexStr(reg.offset, 16) + '">'
-               + escHtml(reg.name) + '</a>';
+               + '<span class="nav-name">' + escHtml(reg.name) + '</span>'
+               + '<span class="nav-addr">' + hexStr(reg.offset, 16) + '</span>'
+               + '</a>';
     }
   }
   sidebar.innerHTML = navHtml;
   if (allMaps.reduce((s, m) => s + m.info.registers.length, 0) > 1) {
     sidebar.classList.add('visible');
+  }
+  setupScrollSpy();
+}
+
+/*
+ * Scroll spy: highlight the sidebar link that corresponds to the register
+ * currently in view, and reflect its anchor in the URL hash. Uses
+ * IntersectionObserver against the .reg-card elements.
+ */
+let scrollSpyObserver = null;
+let visibleCards = new Set();
+function setupScrollSpy() {
+  if (scrollSpyObserver) scrollSpyObserver.disconnect();
+  visibleCards = new Set();
+  const cards = document.querySelectorAll('.reg-card');
+  if (!cards.length) return;
+  // rootMargin: trigger when card enters the top portion of the viewport.
+  scrollSpyObserver = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting) visibleCards.add(e.target.id);
+      else visibleCards.delete(e.target.id);
+    }
+    // When the page is scrolled to the very bottom the last card cannot
+    // reach the top of the viewport — in that case force-pick the last
+    // visible card so the sidebar indicator still tracks the user.
+    const atBottom = window.innerHeight + window.scrollY >=
+                     document.documentElement.scrollHeight - 2;
+    if (atBottom && visibleCards.size > 0) {
+      let bottomId = null, bottomY = -Infinity;
+      for (const id of visibleCards) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        const y = el.getBoundingClientRect().top;
+        if (y > bottomY) { bottomY = y; bottomId = id; }
+      }
+      if (bottomId) { setActiveLink(bottomId); return; }
+    }
+    // Otherwise: pick the topmost visible card (smallest top offset).
+    let topId = null, topY = Infinity;
+    for (const id of visibleCards) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const y = el.getBoundingClientRect().top;
+      if (y < topY) { topY = y; topId = id; }
+    }
+    if (topId) setActiveLink(topId);
+  }, {
+    rootMargin: '-10% 0px -70% 0px',
+    threshold: 0,
+  });
+  cards.forEach(c => scrollSpyObserver.observe(c));
+
+  // Direct click on a sidebar link: highlight immediately, regardless of
+  // whether the target card can actually reach the IntersectionObserver's
+  // trigger band (last register cannot, since there's nothing below it).
+  document.querySelectorAll('.sidebar a').forEach(a => {
+    a.addEventListener('click', () => {
+      const href = a.getAttribute('href') || '';
+      if (href.startsWith('#')) setActiveLink(href.slice(1));
+    });
+  });
+}
+
+function setActiveLink(cardId) {
+  const links = document.querySelectorAll('.sidebar a');
+  let activeLink = null;
+  links.forEach(a => {
+    const isActive = a.getAttribute('href') === '#' + cardId;
+    a.classList.toggle('active', isActive);
+    if (isActive) activeLink = a;
+  });
+  if (activeLink) {
+    // Scroll the sidebar so the active link stays visible.
+    const sb = $('sidebar');
+    if (sb) {
+      const lr = activeLink.getBoundingClientRect();
+      const sr = sb.getBoundingClientRect();
+      if (lr.top < sr.top || lr.bottom > sr.bottom) {
+        activeLink.scrollIntoView({ block: 'nearest' });
+      }
+    }
+    // Update the URL hash without triggering a jump.
+    if (location.hash !== '#' + cardId) {
+      history.replaceState(null, '', '#' + cardId);
+    }
   }
 }
 
@@ -325,27 +829,34 @@ async function refreshAll() {
   }
 }
 
-async function dumpAll() {
-  if (!allMaps.length) return;
-  const gs = $('global-status');
+async function dumpAll() { return dumpMaps(allMaps, 'global-status'); }
+async function dumpMap(slug) {
+  const map = getMap(slug);
+  if (!map) return;
+  return dumpMaps([map], 'global-status');
+}
+
+async function dumpMaps(maps, statusId) {
+  if (!maps.length) return;
+  const gs = statusId ? $(statusId) : null;
   if (gs) gs.textContent = 'Dumping...';
   try {
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    const multi = allMaps.length > 1 || allMaps[0].slug !== '_';
+    const multi = maps.length > 1 || maps[0].slug !== '_';
     let lines = [];
     lines.push('# ddevmem register dump');
     lines.push('# Date: ' + new Date().toISOString());
-    if (multi) lines.push('# Maps: ' + allMaps.length);
+    if (multi) lines.push('# Maps: ' + maps.length);
     lines.push('');
     let fileName;
-    for (const map of allMaps) {
+    for (const map of maps) {
       const info = map.info;
       if (multi) {
         lines.push('## ' + info.name + ' (' + map.slug + ')');
       } else {
         lines[0] = '# ' + info.name + ' register dump';
-        fileName = info.name;
       }
+      if (!fileName) fileName = info.name;
       lines.push('# Base address: ' + hexStr(info.base_address, 32));
       lines.push('# Bus width: ' + (info.bus_width * 8) + ' bit');
       lines.push('');
@@ -394,6 +905,31 @@ $('auto-refresh').addEventListener('change', function() {
     autoTimer = null;
   }
 });
+
+function updateThemeButton() {
+  const t = document.documentElement.getAttribute('data-theme');
+  const btn = $('theme-toggle');
+  if (!btn) return;
+  // Carbon icons (16×16): "asleep" (moon) shown when in dark theme,
+  // "light" (sun) shown when in light theme. The icon mirrors the *current*
+  // theme, the title hints at the action ("Switch to …").
+  const dark = t !== 'g10';
+  const moon = '<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+             + '<path d="M13.502 5.414a15.075 15.075 0 0 0 11.594 18.194 11.113 11.113 0 0 1-7.975 3.39c-.138 0-.278.005-.418 0a11.094 11.094 0 0 1-3.2-21.584M14.98 3a1 1 0 0 0-.175.016 13.096 13.096 0 0 0 1.825 25.981c.164.006.328 0 .49 0a13.072 13.072 0 0 0 10.703-5.555 1.01 1.01 0 0 0-.783-1.582 13.08 13.08 0 0 1-11.107-19.302A1.005 1.005 0 0 0 14.98 3z"/></svg>';
+  const sun  = '<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+             + '<path d="M16 12.005a4 4 0 1 1-4 4 4.005 4.005 0 0 1 4-4m0-2a6 6 0 1 0 6 6 6 6 0 0 0-6-6zM5.394 6.813 6.81 5.399 9.64 8.227 8.226 9.643zM2 15.005h4v2H2zM5.394 25.196 8.222 22.367 9.636 23.781 6.808 26.61zM15 26.005h2v4h-2zM22.362 23.79l1.414-1.414 2.828 2.827-1.414 1.415zM26 15.005h4v2h-4zM22.359 8.227 25.187 5.399 26.601 6.813 23.773 9.641zM15 2.005h2v4h-2z"/></svg>';
+  btn.innerHTML = dark ? moon : sun;
+  btn.title = dark ? 'Switch to light theme' : 'Switch to dark theme';
+  btn.setAttribute('aria-label', btn.title);
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'g10' ? 'g100' : 'g10';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('ddevmem-theme', next); } catch (_) {}
+  updateThemeButton();
+}
+updateThemeButton();
 
 init();
 </script>

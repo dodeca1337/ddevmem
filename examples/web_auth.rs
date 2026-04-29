@@ -52,7 +52,7 @@ async fn main() {
     );
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Register map web UI (with auth) at http://localhost:3000");
+    println!("Register map web UI (with auth) at http://localhost:3000/");
     println!("Credentials: admin / secret");
     axum::serve(listener, app).await.unwrap();
 }
