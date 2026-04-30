@@ -30,6 +30,15 @@ serde_json = { version = "1", optional = true }
 base64 = { version = "0.22.1", optional = true }
 subtle = { version = "2.6.1", optional = true }
 
+# Self-dev-dependency: when Cargo builds examples / tests / benches it
+# unifies features from `[dependencies]` and `[dev-dependencies]`. Pulling
+# the crate in here with `emulator` activates that feature for every
+# example build without changing `[features].default`. Downstream users
+# are unaffected (dev-deps don't propagate). `src/devmem.rs` lets
+# `emulator` win when both backends are enabled simultaneously.
+[dev-dependencies]
+ddevmem = { path = ".", features = ["emulator"] }
+
 [build-dependencies]
 # Used by build.rs to minify src/web_ui.html into OUT_DIR. Always compiled
 # (Cargo has no clean way to gate build-deps on feature flags), but the

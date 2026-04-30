@@ -1,10 +1,10 @@
 use bytemuck::{AnyBitPattern, NoUninit};
 use std::{fmt, io::Error as IOError};
 
-#[cfg(feature = "device")]
+#[cfg(all(feature = "device", not(feature = "emulator")))]
 use memmap2::{MmapMut, MmapOptions};
 
-#[cfg(feature = "device")]
+#[cfg(all(feature = "device", not(feature = "emulator")))]
 use std::fs::OpenOptions;
 
 /// Error returned when creating a [`DevMem`] instance.
@@ -64,7 +64,7 @@ impl From<Error> for IOError {
 /// [`Arc`](std::sync::Arc) and protect mutable access with a lock if you need
 /// cross-thread sharing.
 pub struct DevMem {
-    #[cfg(all(feature = "emulator", not(feature = "device")))]
+    #[cfg(feature = "emulator")]
     mmap: Vec<u8>,
     #[cfg(all(feature = "device", not(feature = "emulator")))]
     mmap: MmapMut,
@@ -117,7 +117,7 @@ impl DevMem {
             Ok(Self { mmap, address })
         }
 
-        #[cfg(all(feature = "emulator", not(feature = "device")))]
+        #[cfg(feature = "emulator")]
         {
             let mmap = vec![0; size];
             Ok(Self { mmap, address })
