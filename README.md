@@ -266,6 +266,40 @@ array entry get the same treatment:
     }
 ```
 
+A complete example using the array API:
+
+```rust,no_run
+use std::sync::Arc;
+use ddevmem::{register_map, DevMem};
+
+register_map! {
+    pub unsafe map Dma (u32) {
+        0x10 => rw fifo: [u32; 8],
+        0x40 => rw chan: [u32; 4] {
+            enable: 0    as bool,
+            prio:   1..=3 as u8
+        }
+    }
+}
+
+let devmem = unsafe { DevMem::new(0x4002_0000, None).unwrap() };
+let mut dma = unsafe { Dma::new(Arc::new(devmem)).unwrap() };
+
+// Whole-register access by index.
+for i in 0..dma.fifo_len() {
+    dma.set_fifo(i, (i as u32) * 0x1111_1111);
+}
+let head: u32 = dma.fifo(0);
+
+// Bitfield access on each array element.
+for i in 0..dma.chan_len() {
+    dma.set_chan_enable(i, true);
+    dma.set_chan_prio(i, i as u8);
+}
+assert!(dma.chan_enable(0));
+assert_eq!(dma.chan_prio(2), 2u8);
+```
+
 **Generated methods per register:**
 
 | Kind        | Method            | Description                         |
@@ -357,31 +391,42 @@ async fn main() {
 > instead of `==` to avoid leaking the password through response timing,
 > and use bitwise `&` (not `&&`) so both comparisons run unconditionally.
 
-```rust,no_run
-# use std::sync::Arc;
-# use tokio::sync::Mutex;
-# use ddevmem::{register_map, DevMem};
-# use ddevmem::web::ct_eq;
-# register_map! {
-#     pub unsafe map R (u32) { 0x00 => rw x: u32 }
-# }
-# async fn example() {
-# let devmem = unsafe { DevMem::new(0x0, None).unwrap() };
-# let regs = unsafe { R::new(Arc::new(devmem)).unwrap() };
-# let regs = Arc::new(Mutex::new(regs));
-// Static credentials (constant-time comparison)
-let app = ddevmem::web::WebUi::new()
-    .add("r", regs.clone())
-    .with_auth(|user, pass| ct_eq(user, "admin") & ct_eq(pass, "hunter2"))
-    .build();
+`with_auth` takes an **async** callback `Fn(String, String) -> Future<Output = bool>`,
+so the closure body must be an `async move { ... }` block. This lets the
+check perform I/O (e.g. database lookup) without blocking the runtime.
 
-// Or validate against an external source
-let app = ddevmem::web::WebUi::new()
-    .add("r", regs)
-    .with_auth(|user, pass| my_auth_db::check(user, pass))
-    .build();
-# }
-# mod my_auth_db { pub fn check(_: &str, _: &str) -> bool { true } }
+```rust,no_run
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use ddevmem::{register_map, DevMem};
+use ddevmem::web::{ct_eq, WebUi};
+
+register_map! {
+    pub unsafe map R (u32) { 0x00 => rw x: u32 }
+}
+
+async fn build_apps(regs: Arc<Mutex<R>>) {
+    // Static credentials (constant-time comparison).
+    let _app = WebUi::new()
+        .add("r", regs.clone())
+        .with_auth(|user, pass| async move {
+            ct_eq(&user, "admin") & ct_eq(&pass, "hunter2")
+        })
+        .build();
+
+    // Or validate against an external source (sync or async — both work
+    // inside the `async move` block).
+    let _app = WebUi::new()
+        .add("r", regs)
+        .with_auth(|user, pass| async move {
+            my_auth_db::check(&user, &pass).await
+        })
+        .build();
+}
+
+mod my_auth_db {
+    pub async fn check(_u: &str, _p: &str) -> bool { true }
+}
 ```
 
 The web UI provides:
@@ -396,22 +441,24 @@ The returned `Router` has no root path baked in.
 Use `axum::Router::nest()` to mount it wherever you need:
 
 ```rust,no_run
-# use std::sync::Arc;
-# use tokio::sync::Mutex;
-# use ddevmem::{register_map, DevMem};
-# register_map! {
-#     pub unsafe map R (u32) { 0x00 => rw x: u32 }
-# }
-# async fn example() {
-# let devmem = unsafe { DevMem::new(0x0, None).unwrap() };
-# let regs = unsafe { R::new(Arc::new(devmem)).unwrap() };
-# let regs = Arc::new(Mutex::new(regs));
-// Mount at a custom prefix:
-let app = axum::Router::new().nest(
-    "/registers/axi",
-    ddevmem::web::WebUi::new().add("axi", regs).build(),
-);
-# }
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use ddevmem::{register_map, DevMem};
+use ddevmem::web::WebUi;
+
+register_map! {
+    pub unsafe map R (u32) { 0x00 => rw x: u32 }
+}
+
+async fn run(regs: Arc<Mutex<R>>) {
+    // Mount at a custom prefix:
+    let app = axum::Router::new().nest(
+        "/registers/axi",
+        WebUi::new().add("axi", regs).build(),
+    );
+    // ... axum::serve(listener, app).await.unwrap();
+    let _ = app;
+}
 ```
 
 **API endpoints** (relative to mount point):
@@ -431,18 +478,21 @@ The heading shown in the browser tab and the UI-Shell header defaults to
 Override it with [`WebUi::with_title`](https://docs.rs/ddevmem/latest/ddevmem/web/struct.WebUi.html#method.with_title):
 
 ```rust,no_run
-# use std::sync::Arc;
-# use tokio::sync::Mutex;
-# use ddevmem::{register_map, DevMem};
-# register_map! { pub unsafe map R (u32) { 0x00 => rw x: u32 } }
-# async fn run() {
-# let d = unsafe { DevMem::new(0x0, Some(256)).unwrap() };
-# let r = unsafe { R::new(Arc::new(d)).unwrap() };
-let app = ddevmem::web::WebUi::new()
-    .with_title("Acme SoC — Hardware Registers")
-    .add("r", Arc::new(Mutex::new(r)))
-    .build();
-# }
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use ddevmem::{register_map, DevMem};
+use ddevmem::web::WebUi;
+
+register_map! {
+    pub unsafe map R (u32) { 0x00 => rw x: u32 }
+}
+
+async fn run(regs: Arc<Mutex<R>>) {
+    let _app = WebUi::new()
+        .with_title("Acme SoC — Hardware Registers")
+        .add("r", regs)
+        .build();
+}
 ```
 
 **Hosting multiple register maps on one page:**
@@ -451,38 +501,37 @@ The same `WebUi` builder accepts several `.add(slug, regs)` calls.
 All maps are displayed together on a single page.
 
 ```rust,no_run
-# use std::sync::Arc;
-# use tokio::sync::Mutex;
-# use ddevmem::{register_map, DevMem};
-# register_map! {
-#     pub unsafe map Spi (u32) { 0x00 => rw cr: u32 }
-# }
-# register_map! {
-#     pub unsafe map Gpio (u32) { 0x00 => rw data: u32 }
-# }
-# async fn example() {
-# let d1 = unsafe { DevMem::new(0x0, Some(256)).unwrap() };
-# let d2 = unsafe { DevMem::new(0x0, Some(256)).unwrap() };
-# let spi = unsafe { Spi::new(Arc::new(d1)).unwrap() };
-# let gpio = unsafe { Gpio::new(Arc::new(d2)).unwrap() };
-let app = axum::Router::new().nest(
-    "/hw",
-    ddevmem::web::WebUi::new()
-        .add("spi", Arc::new(Mutex::new(spi)))
-        .add("gpio", Arc::new(Mutex::new(gpio)))
-        .build(),
-);
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use ddevmem::{register_map, DevMem};
+use ddevmem::web::WebUi;
 
-// With auth:
-// let r = ddevmem::web::WebUi::new()
-//     .add("spi", spi_regs)
-//     .add("gpio", gpio_regs)
-//     .with_auth(|u, p| u == "admin" && p == "secret")
-//     .build();
+register_map! {
+    pub unsafe map Spi (u32) { 0x00 => rw cr: u32 }
+}
+register_map! {
+    pub unsafe map Gpio (u32) { 0x00 => rw data: u32 }
+}
 
-let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-axum::serve(listener, app).await.unwrap();
-# }
+async fn run(spi: Arc<Mutex<Spi>>, gpio: Arc<Mutex<Gpio>>) {
+    let app = axum::Router::new().nest(
+        "/hw",
+        WebUi::new()
+            .add("spi", spi)
+            .add("gpio", gpio)
+            .build(),
+    );
+
+    // With auth:
+    // let r = WebUi::new()
+    //     .add("spi", spi_regs)
+    //     .add("gpio", gpio_regs)
+    //     .with_auth(|u, p| async move { u == "admin" && p == "secret" })
+    //     .build();
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
 ```
 
 ### Using the emulator for testing

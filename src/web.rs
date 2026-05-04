@@ -435,10 +435,10 @@ impl WebUi {
     ///
     /// The router serves:
     /// - `GET /` — single HTML page showing all maps
-    /// - `GET /api/maps` — JSON list of `{ slug, name }`
-    /// - `GET /api/{slug}/info` — register metadata
-    /// - `POST /api/{slug}/read` — read a register
-    /// - `POST /api/{slug}/write` — write a register
+    /// - `GET /api/maps` — `{ title?: String, maps: [{ slug, name }, ...] }`
+    /// - `GET /api/{slug}/info` — register metadata (name, base, registers)
+    /// - `POST /api/{slug}/read` — body `{ offset }`, returns `{ value }`
+    /// - `POST /api/{slug}/write` — body `{ offset, value }`, returns `200 OK`
     pub fn build(self) -> Router {
         let state = WebUiState {
             maps: self.maps,
