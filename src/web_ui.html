@@ -94,13 +94,32 @@
     --support-success: #24a148;
   }
 
+  /* Carbon spacing scale (subset). All paddings/margins below reference
+     these tokens so the layout follows the official 8 px grid. */
+  :root {
+    --spacing-01: .125rem; /*  2 px */
+    --spacing-02: .25rem;  /*  4 px */
+    --spacing-03: .5rem;   /*  8 px */
+    --spacing-04: .75rem;  /* 12 px */
+    --spacing-05: 1rem;    /* 16 px */
+    --spacing-06: 1.5rem;  /* 24 px */
+    --spacing-07: 2rem;    /* 32 px */
+    --spacing-08: 2.5rem;  /* 40 px */
+    --spacing-09: 3rem;    /* 48 px */
+    --header-h:  3rem;     /* UI-shell header */
+    --sidenav-w: 16rem;    /* 256 px — Carbon side-nav width */
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { background: var(--background); color: var(--text-primary); }
   body {
     font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     font-size: 14px;
     line-height: 1.4;
-    padding: 1.5rem;
+    /* No body padding: the UI-Shell header is fixed on top, side-nav is
+       fixed on the left, and `.main-content` carries its own gutters. */
+    padding: 0;
+    padding-top: var(--header-h);
     -webkit-font-smoothing: antialiased;
     transition: background-color 70ms, color 70ms;
   }
@@ -108,28 +127,74 @@
     font-family: 'IBM Plex Mono', ui-monospace, 'JetBrains Mono', 'Fira Code', monospace;
   }
 
-  h1 { font-size: 1.75rem; font-weight: 300; letter-spacing: -.01em; margin-bottom: .25rem; }
+  h1 { font-size: 1.75rem; font-weight: 300; letter-spacing: -.01em; margin-bottom: var(--spacing-02); }
   h2 {
-    font-size: 1.25rem; font-weight: 400; margin: 2rem 0 .5rem;
-    padding: .5rem 0; border-bottom: 1px solid var(--border-subtle);
-    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+    font-size: 1.25rem; font-weight: 400; margin: var(--spacing-07) 0 var(--spacing-03);
+    padding: var(--spacing-03) 0; border-bottom: 1px solid var(--border-subtle);
+    display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-05);
   }
   h2 .map-dump { font-size: .75rem; }
-  .meta { color: var(--text-helper); font-size: .75rem; margin-bottom: 1rem; letter-spacing: .02em; }
+  .meta { color: var(--text-helper); font-size: .75rem; margin-bottom: var(--spacing-05); letter-spacing: .02em; }
+
+  /* ---- UI-Shell header (Carbon `.cds--header`) -------------------------
+     Fixed 48 px black/white bar across the top of the viewport. Holds
+     the product name on the left and global actions (theme toggle) on
+     the right. */
+  .app-header {
+    position: fixed; inset: 0 0 auto 0;
+    height: var(--header-h);
+    display: flex; align-items: center;
+    background: var(--background);
+    border-bottom: 1px solid var(--border-subtle);
+    z-index: 10;
+  }
+  .app-header .brand {
+    padding: 0 var(--spacing-05);
+    font-size: .875rem;
+    font-weight: 600;
+    letter-spacing: .01em;
+    color: var(--text-primary);
+    display: inline-flex; align-items: center; gap: var(--spacing-03);
+  }
+  .app-header .brand .brand-sub {
+    color: var(--text-helper);
+    font-weight: 400;
+  }
+  .app-header .header-actions {
+    margin-left: auto;
+    display: inline-flex;
+    height: 100%;
+  }
+  .app-header .header-actions > button {
+    height: var(--header-h);
+    width: var(--header-h);
+    border-radius: 0;
+    border-color: transparent;
+    color: var(--text-primary);
+  }
+  .app-header .header-actions > button:hover {
+    background: var(--layer-01);
+    color: var(--text-primary);
+    border-color: transparent;
+  }
+  .app-header .header-actions > button:focus {
+    border-color: var(--focus);
+    box-shadow: inset 0 0 0 1px var(--focus),
+                inset 0 0 0 2px var(--background);
+  }
 
   /* Tile (register card) */
   .reg-card {
     background: var(--layer-01);
     border: 1px solid transparent;
-    border-left: 2px solid transparent;
-    padding: 1rem 1.25rem;
+    padding: var(--spacing-05) var(--spacing-05);
     margin-bottom: 2px;
     transition: background-color 70ms, border-color 70ms;
   }
-  .reg-header { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: .25rem; }
+  .reg-header { display: flex; align-items: center; gap: var(--spacing-04); flex-wrap: wrap; margin-bottom: var(--spacing-02); }
   .reg-name { font-weight: 600; font-size: 1rem; color: var(--text-primary); }
-  .reg-offset { color: var(--text-helper); font-size: .75rem; }
-  .reg-doc { color: var(--text-secondary); font-size: .8125rem; margin: .25rem 0 .75rem; }
+  .reg-offset { color: var(--text-helper); font-size: .75rem; margin-left: auto; }
+  .reg-doc { color: var(--text-secondary); font-size: .8125rem; margin: var(--spacing-02) 0 var(--spacing-04); }
 
   /*
    * Tag (Carbon spec, size sm = 18px, pill shape). rw/ro/wo carry no
@@ -358,14 +423,12 @@
 
   /* Toolbar */
   .toolbar {
-    display: flex; align-items: center; gap: .5rem;
-    margin: 1rem 0 1.25rem; flex-wrap: wrap;
-    padding: .5rem 0;
-    border-top: 1px solid var(--border-subtle);
-    border-bottom: 1px solid var(--border-subtle);
+    display: flex; align-items: center; gap: var(--spacing-03);
+    margin: var(--spacing-05) 0 var(--spacing-06);
+    flex-wrap: wrap;
   }
   .toolbar .spacer { flex: 1; }
-  .toolbar label { font-size: .8125rem; color: var(--text-secondary); cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: .5rem; }
+  .toolbar label { font-size: .8125rem; color: var(--text-secondary); cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: var(--spacing-03); }
 
   /* Checkbox */
   input[type="checkbox"] {
@@ -389,25 +452,34 @@
   }
   input[type="checkbox"]:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
 
-  /* Layout + sidebar (tree-view) */
-  .layout { display: flex; gap: 1.5rem; }
+  /* Layout + side-nav (Carbon `.cds--side-nav`).
+     The side-nav is fixed to the left edge under the UI-Shell header and
+     spans the full remaining viewport height. Main content is offset by
+     the sidebar width when the sidebar is visible. */
+  .layout { display: block; }
   .sidebar {
-    position: sticky; top: 1rem; align-self: flex-start;
-    min-width: 200px; max-width: 240px;
-    max-height: calc(100vh - 2rem); overflow-y: auto;
+    position: fixed;
+    top: var(--header-h);
+    left: 0;
+    width: var(--sidenav-w);
+    height: calc(100vh - var(--header-h));
+    overflow-y: auto;
     background: var(--layer-01);
-    border-left: 1px solid var(--border-subtle);
-    padding: .25rem 0;
+    border-right: 1px solid var(--border-subtle);
+    padding: var(--spacing-03) 0;
     display: none;
+    z-index: 5;
   }
   .sidebar.visible { display: block; }
   .sidebar a {
-    display: flex; align-items: baseline; gap: .5rem;
-    padding: .375rem .75rem .375rem 1rem;
+    display: flex; align-items: baseline; gap: var(--spacing-03);
+    /* Carbon side-nav item: 32 px height, 16 px inline padding */
+    padding: var(--spacing-02) var(--spacing-05);
+    min-height: 2rem;
     color: var(--text-secondary); text-decoration: none;
     font-size: .8125rem;
     white-space: nowrap; overflow: hidden;
-    border-left: 2px solid transparent;
+    border-left: 3px solid transparent;
     transition: background-color 70ms, color 70ms, border-color 70ms;
   }
   .sidebar a .nav-name { overflow: hidden; text-overflow: ellipsis; }
@@ -428,19 +500,31 @@
   .sidebar .nav-heading {
     color: var(--text-helper);
     font-weight: 600; font-size: .6875rem; letter-spacing: .04em; text-transform: uppercase;
-    padding: .75rem .75rem .125rem 1rem;
+    padding: var(--spacing-04) var(--spacing-05) var(--spacing-01);
   }
   .sidebar .nav-base {
     font-family: 'IBM Plex Mono', ui-monospace, monospace;
     font-size: .6875rem; color: var(--text-helper);
-    padding: 0 .75rem .25rem 1rem;
+    padding: 0 var(--spacing-05) var(--spacing-02);
     text-transform: none; letter-spacing: 0; font-weight: 400;
   }
   .sidebar::-webkit-scrollbar { width: 8px; }
   .sidebar::-webkit-scrollbar-thumb { background: var(--border-subtle); }
   .sidebar::-webkit-scrollbar-track { background: transparent; }
 
-  .main-content { flex: 1; min-width: 0; }
+  .main-content {
+    /* Carbon page gutters: 32 px on wide displays, 16 px below 672 px. */
+    padding: var(--spacing-06) var(--spacing-07);
+    min-width: 0;
+    transition: margin-left 70ms;
+  }
+  /* When the side-nav is visible, push content to the right of it. */
+  body:has(.sidebar.visible) .main-content { margin-left: var(--sidenav-w); }
+  @media (max-width: 720px) {
+    .main-content { padding: var(--spacing-05); }
+    body:has(.sidebar.visible) .main-content { margin-left: 0; }
+    .sidebar.visible { display: none; }
+  }
 
   a { color: var(--link-primary); }
   a:hover { color: var(--link-hover); }
@@ -456,6 +540,20 @@
 </head>
 <body>
 
+<header class="app-header" role="banner">
+  <span class="brand">
+    ddevmem
+    <span class="brand-sub">· Register Map</span>
+  </span>
+  <div class="header-actions">
+    <button class="btn-ghost btn-icon-only" id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme" title="Toggle theme"></button>
+  </div>
+</header>
+
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<div class="main-content">
+
 <h1 id="title">ddevmem — Register Map</h1>
 <div class="meta" id="meta"></div>
 
@@ -464,13 +562,8 @@
   <button class="btn-ghost" onclick="dumpAll()">Dump all</button>
   <label><input type="checkbox" id="auto-refresh"> Auto-refresh (1s)</label>
   <span class="status" id="global-status"></span>
-  <span class="spacer"></span>
-  <button class="btn-ghost btn-icon-only" id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme" title="Toggle theme"></button>
 </div>
 
-<div class="layout">
-<nav class="sidebar" id="sidebar"></nav>
-<div class="main-content">
 <div id="maps"></div>
 </div>
 </div>
