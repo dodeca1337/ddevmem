@@ -20,21 +20,21 @@ with volatile read/write semantics suitable for memory-mapped I/O (MMIO).
 
 ```toml
 [dependencies]
-ddevmem = "0.4.0"
+ddevmem = "0.4.1"
 ```
 
 Or with specific features:
 
 ```toml
 [dependencies]
-ddevmem = { version = "0.4.0", default-features = false, features = ["emulator", "register-map"] }
+ddevmem = { version = "0.4.1", default-features = false, features = ["emulator", "register-map"] }
 ```
 
 With the web UI:
 
 ```toml
 [dependencies]
-ddevmem = { version = "0.4.0", features = ["web"] }
+ddevmem = { version = "0.4.1", features = ["web"] }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -541,7 +541,7 @@ allowing you to test register map logic without hardware:
 
 ```rust,no_run
 // Cargo.toml:
-// ddevmem = { version = "0.4.0", default-features = false, features = ["emulator", "register-map"] }
+// ddevmem = { version = "0.4.1", default-features = false, features = ["emulator", "register-map"] }
 
 use std::sync::Arc;
 use ddevmem::{register_map, DevMem};
