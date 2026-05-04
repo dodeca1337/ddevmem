@@ -416,13 +416,13 @@ let app = axum::Router::new().nest(
 
 **API endpoints** (relative to mount point):
 
-| Method | Path                | Body                           | Response                                                  |
-| ------ | ------------------- | ------------------------------ | --------------------------------------------------------- |
-| GET    | `/`                 | —                              | HTML single-page app                                      |
-| GET    | `/api/maps`         | —                              | `{ title?: string, maps: [{ slug, name }, ...] }`         |
-| GET    | `/api/{slug}/info`  | —                              | `{ name, bus_width, base_address, registers: [...] }`     |
-| POST   | `/api/{slug}/read`  | `{ "offset": 0 }`              | `{ "value": 12345 }`                                      |
-| POST   | `/api/{slug}/write` | `{ "offset": 0, "value": 42 }` | `200 OK`                                                  |
+| Method | Path                | Body                           | Response                                              |
+| ------ | ------------------- | ------------------------------ | ----------------------------------------------------- |
+| GET    | `/`                 | —                              | HTML single-page app                                  |
+| GET    | `/api/maps`         | —                              | `{ title?: string, maps: [{ slug, name }, ...] }`     |
+| GET    | `/api/{slug}/info`  | —                              | `{ name, bus_width, base_address, registers: [...] }` |
+| POST   | `/api/{slug}/read`  | `{ "offset": 0 }`              | `{ "value": 12345 }`                                  |
+| POST   | `/api/{slug}/write` | `{ "offset": 0, "value": 42 }` | `200 OK`                                              |
 
 **Custom page title:**
 
@@ -540,16 +540,16 @@ assert_eq!(regs.ctrl_irq_en(), 0); // other bits untouched
 The crate ships several runnable examples under [`examples/`](./examples).
 Each one enables the `emulator` feature, so they work without `/dev/mem`.
 
-| File                  | Topic                                                              |
-| --------------------- | ------------------------------------------------------------------ |
-| `default_bus.rs`      | Minimal register map with `rw` / `ro` / `wo` access.               |
-| `bitfield.rs`         | Plain numeric bitfields, doc comments.                             |
-| `typed_bitfield.rs`   | Typed bitfields: `as bool`, `as u8`, `as enum`.                    |
-| `array_regs.rs`       | Register arrays (`[T; N]`) with per-element bitfields.             |
-| `web_server.rs`       | Single map served via the `web` feature.                           |
-| `web_auth.rs`         | Web UI behind HTTP Basic auth (constant-time `ct_eq`).             |
-| `web_same_map.rs`     | Two instances of the same map at different base addresses.         |
-| `web_showcase.rs`     | Full-feature showcase: 4 peripherals, every bitfield kind, arrays. |
+| File                | Topic                                                              |
+| ------------------- | ------------------------------------------------------------------ |
+| `default_bus.rs`    | Minimal register map with `rw` / `ro` / `wo` access.               |
+| `bitfield.rs`       | Plain numeric bitfields, doc comments.                             |
+| `typed_bitfield.rs` | Typed bitfields: `as bool`, `as u8`, `as enum`.                    |
+| `array_regs.rs`     | Register arrays (`[T; N]`) with per-element bitfields.             |
+| `web_server.rs`     | Single map served via the `web` feature.                           |
+| `web_auth.rs`       | Web UI behind HTTP Basic auth (constant-time `ct_eq`).             |
+| `web_same_map.rs`   | Two instances of the same map at different base addresses.         |
+| `web_showcase.rs`   | Full-feature showcase: 4 peripherals, every bitfield kind, arrays. |
 
 Run any of them with:
 
