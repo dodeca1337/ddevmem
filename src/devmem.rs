@@ -15,16 +15,16 @@ use std::fs::OpenOptions;
 #[derive(Debug)]
 pub enum Error {
     /// The `/dev/mem` file could not be opened.
-    CentOpenFile(IOError),
+    CantOpenFile(IOError),
     /// The memory-mapping (`mmap`) call failed.
-    CentMmapFile(IOError),
+    CantMmapFile(IOError),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::CentOpenFile(err) => write!(f, "failed to open /dev/mem: {err}"),
-            Error::CentMmapFile(err) => write!(f, "failed to mmap /dev/mem: {err}"),
+            Error::CantOpenFile(err) => write!(f, "failed to open /dev/mem: {err}"),
+            Error::CantMmapFile(err) => write!(f, "failed to mmap /dev/mem: {err}"),
         }
     }
 }
@@ -32,7 +32,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::CentOpenFile(err) | Error::CentMmapFile(err) => Some(err),
+            Error::CantOpenFile(err) | Error::CantMmapFile(err) => Some(err),
         }
     }
 }
@@ -40,7 +40,7 @@ impl std::error::Error for Error {
 impl From<Error> for IOError {
     fn from(err: Error) -> IOError {
         match err {
-            Error::CentOpenFile(e) | Error::CentMmapFile(e) => e,
+            Error::CantOpenFile(e) | Error::CantMmapFile(e) => e,
         }
     }
 }
@@ -93,8 +93,8 @@ impl DevMem {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CentOpenFile`] if `/dev/mem` cannot be opened, or
-    /// [`Error::CentMmapFile`] if the `mmap` call fails.
+    /// Returns [`Error::CantOpenFile`] if `/dev/mem` cannot be opened, or
+    /// [`Error::CantMmapFile`] if the `mmap` call fails.
     pub unsafe fn new(address: usize, size: Option<usize>) -> Result<Self, Error> {
         let page_size = page_size::get();
         let size = size.unwrap_or(page_size);
@@ -106,13 +106,13 @@ impl DevMem {
                 .write(true)
                 .create(false)
                 .open("/dev/mem")
-                .map_err(Error::CentOpenFile)?;
+                .map_err(Error::CantOpenFile)?;
 
             let mmap = MmapOptions::new()
                 .len(size)
                 .offset(address as u64)
                 .map_mut(&file)
-                .map_err(Error::CentMmapFile)?;
+                .map_err(Error::CantMmapFile)?;
 
             Ok(Self { mmap, address })
         }

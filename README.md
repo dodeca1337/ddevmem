@@ -251,6 +251,21 @@ field: lo..=hi    as enum Name {       // getter → Name, setter accepts Name
 Bits not covered by any field declaration are left untouched during
 read-modify-write — there is no need to declare reserved gaps.
 
+**Register arrays.** A register declared as `[T; N]` becomes a contiguous
+run of `N` identical registers at `offset, offset + size_of::<bus>(), …`.
+Accessors take an extra `idx: usize` parameter, and any bitfields on the
+array entry get the same treatment:
+
+```text
+0x10 =>
+    rw fifo: [u32; 8],          // -> fifo(i), set_fifo(i, v), modify_fifo(i, f), fifo_len()
+0x40 =>
+    rw chan: [u32; 4] {         // -> chan(i), set_chan(i, v), chan_len()
+        enable: 0    as bool,   // -> chan_enable(i), set_chan_enable(i, b)
+        prio:   1..=3 as u8     // -> chan_prio(i),   set_chan_prio(i, n)
+    }
+```
+
 **Generated methods per register:**
 
 | Kind        | Method            | Description                         |
@@ -399,15 +414,36 @@ let app = axum::Router::new().nest(
 # }
 ```
 
-**Single-map API endpoints** (relative to mount point):
+**API endpoints** (relative to mount point):
 
-| Method | Path                | Body                           | Response                                              |
-| ------ | ------------------- | ------------------------------ | ----------------------------------------------------- |
-| GET    | `/`                 | —                              | HTML single-page app                                  |
-| GET    | `/api/maps`         | —                              | `[{ slug, name }, ...]`                               |
-| GET    | `/api/{slug}/info`  | —                              | `{ name, bus_width, base_address, registers: [...] }` |
-| POST   | `/api/{slug}/read`  | `{ "offset": 0 }`              | `{ "value": 12345 }`                                  |
-| POST   | `/api/{slug}/write` | `{ "offset": 0, "value": 42 }` | `200 OK`                                              |
+| Method | Path                | Body                           | Response                                                  |
+| ------ | ------------------- | ------------------------------ | --------------------------------------------------------- |
+| GET    | `/`                 | —                              | HTML single-page app                                      |
+| GET    | `/api/maps`         | —                              | `{ title?: string, maps: [{ slug, name }, ...] }`         |
+| GET    | `/api/{slug}/info`  | —                              | `{ name, bus_width, base_address, registers: [...] }`     |
+| POST   | `/api/{slug}/read`  | `{ "offset": 0 }`              | `{ "value": 12345 }`                                      |
+| POST   | `/api/{slug}/write` | `{ "offset": 0, "value": 42 }` | `200 OK`                                                  |
+
+**Custom page title:**
+
+The heading shown in the browser tab and the UI-Shell header defaults to
+`ddevmem — Register Maps` (or the map's own name in single-map mode).
+Override it with [`WebUi::with_title`](https://docs.rs/ddevmem/latest/ddevmem/web/struct.WebUi.html#method.with_title):
+
+```rust,no_run
+# use std::sync::Arc;
+# use tokio::sync::Mutex;
+# use ddevmem::{register_map, DevMem};
+# register_map! { pub unsafe map R (u32) { 0x00 => rw x: u32 } }
+# async fn run() {
+# let d = unsafe { DevMem::new(0x0, Some(256)).unwrap() };
+# let r = unsafe { R::new(Arc::new(d)).unwrap() };
+let app = ddevmem::web::WebUi::new()
+    .with_title("Acme SoC — Hardware Registers")
+    .add("r", Arc::new(Mutex::new(r)))
+    .build();
+# }
+```
 
 **Hosting multiple register maps on one page:**
 
@@ -496,7 +532,30 @@ assert_eq!(regs.ctrl_irq_en(), 0); // other bits untouched
 | No bus-width control                | `register_map!(… (u32) { … })`     |
 | No doc comment support              | `/// …` on registers & bitfields   |
 | No typed bitfield support           | `as bool` / `as u8` / `as enum`    |
+| No register-array support           | `rw fifo: [u32; 8]` (indexed API)  |
 | No web UI                           | `web` feature with `axum` server   |
+
+## Examples
+
+The crate ships several runnable examples under [`examples/`](./examples).
+Each one enables the `emulator` feature, so they work without `/dev/mem`.
+
+| File                  | Topic                                                              |
+| --------------------- | ------------------------------------------------------------------ |
+| `default_bus.rs`      | Minimal register map with `rw` / `ro` / `wo` access.               |
+| `bitfield.rs`         | Plain numeric bitfields, doc comments.                             |
+| `typed_bitfield.rs`   | Typed bitfields: `as bool`, `as u8`, `as enum`.                    |
+| `array_regs.rs`       | Register arrays (`[T; N]`) with per-element bitfields.             |
+| `web_server.rs`       | Single map served via the `web` feature.                           |
+| `web_auth.rs`         | Web UI behind HTTP Basic auth (constant-time `ct_eq`).             |
+| `web_same_map.rs`     | Two instances of the same map at different base addresses.         |
+| `web_showcase.rs`     | Full-feature showcase: 4 peripherals, every bitfield kind, arrays. |
+
+Run any of them with:
+
+```sh
+cargo run --example <name>
+```
 
 ## License
 

@@ -1,6 +1,9 @@
 [package]
 name = "ddevmem-macros"
-description = "Proc-macro companion for ddevmem: register_map! macro"
+description = "Proc-macro companion for ddevmem: the register_map! macro"
+readme = "README.md"
+keywords = ["devmem", "mmio", "register", "embedded", "macro"]
+categories = ["embedded", "hardware-support", "no-std"]
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

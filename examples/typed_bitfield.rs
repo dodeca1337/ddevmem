@@ -47,11 +47,11 @@ fn main() {
 
     // Bool bitfields
     timer.set_cr_enable(true);
-    assert_eq!(timer.cr_enable(), true);
+    assert!(timer.cr_enable());
     println!("enable = {}", timer.cr_enable());
 
     timer.set_cr_one_pulse(false);
-    assert_eq!(timer.cr_one_pulse(), false);
+    assert!(!timer.cr_one_pulse());
     println!("one_pulse = {}", timer.cr_one_pulse());
 
     // Cast bitfield (u8)

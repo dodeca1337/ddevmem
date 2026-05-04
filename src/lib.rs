@@ -101,6 +101,25 @@ pub mod web;
 ///   `#[derive(Debug, Clone, Copy, PartialEq, Eq)]` enum with `from_raw()`
 ///   and `to_raw()` methods. Unknown raw values map to the first variant.
 ///
+/// ## Register arrays
+///
+/// A register declared as `[T; N]` represents `N` consecutive identical
+/// registers at `offset, offset + size_of::<bus>(), …`. Generated accessors
+/// take an extra `idx: usize` parameter, and a `name_len()` method returns
+/// `N`. Bitfields declared on an array entry are also indexed.
+///
+/// ```rust,ignore
+/// register_map! {
+///     pub unsafe map Dma (u32) {
+///         0x10 => rw fifo: [u32; 8],            // fifo(i), set_fifo(i, v)
+///         0x40 => rw chan: [u32; 4] {           // chan(i), set_chan(i, v)
+///             enable: 0    as bool,             // chan_enable(i), set_chan_enable(i, b)
+///             prio:   1..=3 as u8               // chan_prio(i),   set_chan_prio(i, n)
+///         }
+///     }
+/// }
+/// ```
+///
 /// # Generated API
 ///
 /// For a register named `ctrl` the following methods are generated:
