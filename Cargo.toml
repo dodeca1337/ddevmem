@@ -78,13 +78,17 @@ name = "web_auth"
 required-features = ["web", "emulator"]
 
 [[example]]
-name = "multi_web"
+name = "web_showcase"
 required-features = ["web", "emulator"]
 
 [[example]]
-name = "multi_same_map"
+name = "web_same_map"
 required-features = ["web", "emulator"]
 
 [[example]]
 name = "typed_bitfield"
+required-features = ["register-map", "emulator"]
+
+[[example]]
+name = "array_regs"
 required-features = ["register-map", "emulator"]

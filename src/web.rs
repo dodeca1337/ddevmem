@@ -156,7 +156,10 @@ pub struct BitfieldInfo {
 #[derive(Debug, Clone, Serialize)]
 pub struct RegisterInfo {
     /// Register name.
-    pub name: &'static str,
+    ///
+    /// Owned `String` so the macro can synthesize names for array elements
+    /// (`fifo[0]`, `fifo[1]`, …) at runtime.
+    pub name: String,
     /// Documentation string.
     pub doc: &'static str,
     /// Byte offset from the base address.

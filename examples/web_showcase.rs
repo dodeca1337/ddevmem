@@ -1,5 +1,5 @@
-//! Example: multiple register maps on a single web page covering the full
-//! range of register-map features supported by `ddevmem`.
+//! Example: full feature showcase — several peripherals on different bus
+//! widths, every access kind, every bitfield flavor, and register arrays.
 //!
 //! Demonstrated:
 //!   - Three different bus widths: `u32` (UART), `u16` (ADC), `u8` (I²C).
@@ -8,16 +8,66 @@
 //!   - Typed bitfields: `as bool`, `as u8`, and `as enum`.
 //!   - Read-only status registers with bool flags.
 //!   - Write-only command registers and write-1-to-clear interrupt registers.
+//!   - **Register arrays** (`[T; N]`) — see the DMA peripheral below.
 //!
 //! Run with:
-//!   cargo run --example multi_web --no-default-features --features "emulator,web"
+//!   cargo run --example web_showcase --no-default-features --features "emulator,web"
 //!
-//! Then open http://localhost:8800/hw to see all three peripherals.
+//! Then open http://localhost:8800/hw to see all peripherals.
 
 use std::sync::Arc;
 
 use ddevmem::{register_map, DevMem};
 use tokio::sync::Mutex;
+
+// ---------------------------------------------------------------------------
+// DMA: 32-bit bus. Demonstrates **register arrays** — a contiguous run of
+// identical registers declared as `[T; N]`. Bitfields on an array register
+// generate per-element accessors (`chan_enable(i)`, `set_chan_prio(i, v)`).
+// ---------------------------------------------------------------------------
+register_map! {
+    /// DMA controller with an 8-entry data FIFO and 4 channel-mask
+    /// registers — each declared as `[T; N]`.
+    pub unsafe map DmaRegs (u32) {
+        0x00 =>
+            /// Global control.
+            rw ctrl: u32 {
+                /// Master enable.
+                enable: 0 as bool,
+                /// Number of active channels (0–7).
+                nch: 1..=3 as u8
+            },
+        0x04 =>
+            /// Status (read-only).
+            ro sr: u32 {
+                /// Any channel currently transferring.
+                busy: 0 as bool,
+                /// Error latched on any channel.
+                err:  1 as bool
+            },
+
+        // 8 word-wide FIFO slots at 0x10, 0x14, 0x18, ...
+        0x10 =>
+            /// 8-entry data FIFO. Indexed: `fifo(i)` / `set_fifo(i, v)`.
+            rw fifo: [u32; 8],
+
+        // 4 channel-mask registers, each carrying typed bitfields.
+        0x40 =>
+            /// Per-channel masks (4 channels). Bitfields are also indexed:
+            /// `chan_enable(i)`, `set_chan_prio(i, v)`, …
+            rw chan: [u32; 4] {
+                /// Channel enable.
+                enable: 0 as bool,
+                /// Channel priority (0–7).
+                prio: 1..=3 as u8,
+                /// Direction (mem-to-periph vs. periph-to-mem).
+                dir: 4 as enum DmaDir {
+                    M2P = 0,
+                    P2M = 1,
+                }
+            }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // UART: 32-bit bus. Showcases bool / u8 / enum bitfields, write-only command
@@ -227,10 +277,12 @@ async fn main() {
     let uart_mem = unsafe { DevMem::new(0x43D8_0000, Some(256)).unwrap() };
     let adc_mem = unsafe { DevMem::new(0x83C1_0000, Some(256)).unwrap() };
     let i2c_mem = unsafe { DevMem::new(0x83B4_0000, Some(256)).unwrap() };
+    let dma_mem = unsafe { DevMem::new(0x4040_0000, Some(256)).unwrap() };
 
     let mut uart = unsafe { UartRegs::new(Arc::new(uart_mem)).unwrap() };
     let mut adc = unsafe { AdcRegs::new(Arc::new(adc_mem)).unwrap() };
     let mut i2c = unsafe { I2cRegs::new(Arc::new(i2c_mem)).unwrap() };
+    let mut dma = unsafe { DmaRegs::new(Arc::new(dma_mem)).unwrap() };
 
     // Pre-populate values so the UI shows interesting defaults.
     uart.set_cr_tx_en(true);
@@ -253,18 +305,32 @@ async fn main() {
     i2c.set_cr_ack(true);
     i2c.set_oar_addr(0x42);
 
+    // Pre-populate DMA so the array register is visibly non-zero in the UI.
+    dma.set_ctrl_enable(true);
+    dma.set_ctrl_nch(4);
+    for i in 0..dma.fifo_len() {
+        dma.set_fifo(i, 0xDEAD_0000 | i as u32);
+    }
+    for i in 0..4 {
+        dma.set_chan_enable(i, true);
+        dma.set_chan_prio(i, (i as u8) + 1);
+        dma.set_chan_dir(i, if i % 2 == 0 { DmaDir::M2P } else { DmaDir::P2M });
+    }
+
     let regs_router = ddevmem::web::WebUi::new()
         .add("uart", Arc::new(Mutex::new(uart)))
         .add("adc", Arc::new(Mutex::new(adc)))
         .add("i2c", Arc::new(Mutex::new(i2c)))
+        .add("dma", Arc::new(Mutex::new(dma)))
         .build();
 
     let app = axum::Router::new().nest("/hw", regs_router);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8800").await.unwrap();
-    println!("Multi-map web UI at http://localhost:8800/hw");
+    println!("Showcase web UI at http://localhost:8800/hw");
     println!("  uart (u32 bus)  — typed bitfields, wo command + txd, ro rxd");
     println!("  adc  (u16 bus)  — enum trigger/resolution, ro data, wo start");
     println!("  i2c  (u8 bus)   — narrow bus, 7-bit address field, wo cmd");
+    println!("  dma  (u32 bus)  — register arrays: fifo[0..8], chan[0..4]");
     axum::serve(listener, app).await.unwrap();
 }

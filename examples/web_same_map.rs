@@ -1,11 +1,12 @@
-//! Example: two identical register map structs with different base addresses,
-//! plus typed bitfields (bool, u8, enum) with a web UI.
+//! Example: two instances of the same register-map type at different base
+//! addresses, served on a single web page. Also demonstrates typed bitfields
+//! (bool, u8, enum).
 //!
 //! Run with:
-//!   cargo run --example multi_same_map --no-default-features --features "emulator,web"
+//!   cargo run --example web_same_map --no-default-features --features "emulator,web"
 //!
 //! Then open http://localhost:3000/hw/ and verify:
-//!   - Two "TimerRegs" sections appear with different base addresses.
+//!   - Two `TimerRegs` sections appear with different base addresses.
 //!   - Enum fields show dropdown selectors.
 //!   - Bool fields show true/false dropdowns.
 
@@ -75,7 +76,7 @@ async fn main() {
     );
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Multi-map web UI at http://localhost:3000/hw/");
+    println!("Web UI at http://localhost:3000/hw/");
     println!("  timer1 @ 0x4000_0000, timer2 @ 0x4000_1000");
     axum::serve(listener, app).await.unwrap();
 }

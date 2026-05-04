@@ -24,6 +24,10 @@ struct RegisterEntry {
     kind: AccessKind,
     name: Ident,
     ty: Type,
+    /// `Some(N)` when the entry was declared as `[T; N]`, otherwise `None`.
+    /// When set, `ty` is the *element* type and the entry generates an
+    /// indexed API (`name(idx)`, `set_name(idx, v)`, …).
+    array_len: Option<Expr>,
     bitfields: Vec<Bitfield>,
 }
 
@@ -141,7 +145,14 @@ impl Parse for RegisterEntry {
 
         let name: Ident = input.parse()?;
         input.parse::<Token![:]>()?;
-        let ty: Type = input.parse()?;
+        let ty_raw: Type = input.parse()?;
+
+        // Detect `[T; N]` — element type goes into `ty`, length into
+        // `array_len`. Anything else is a single-register entry.
+        let (ty, array_len) = match ty_raw {
+            Type::Array(arr) => (*arr.elem, Some(arr.len)),
+            other => (other, None),
+        };
 
         let bitfields = if input.peek(syn::token::Brace) {
             let content;
@@ -166,6 +177,7 @@ impl Parse for RegisterEntry {
             kind,
             name,
             ty,
+            array_len,
             bitfields,
         })
     }
@@ -342,6 +354,10 @@ fn gen_bounds_checks(bus: &Type, entries: &[RegisterEntry]) -> TokenStream2 {
     for entry in entries {
         let offset = &entry.offset;
         let ty = &entry.ty;
+        let count_expr = match &entry.array_len {
+            Some(n) => quote! { (#n) },
+            None => quote! { 1usize },
+        };
         checks.extend(quote! {
             const _: () = assert!(
                 ::core::mem::size_of::<#ty>() <= ::core::mem::size_of::<#bus>(),
@@ -351,7 +367,7 @@ fn gen_bounds_checks(bus: &Type, entries: &[RegisterEntry]) -> TokenStream2 {
                 (#offset) % ::core::mem::align_of::<#bus>() == 0,
                 "register offset must be aligned to bus width"
             );
-            if (#offset) + ::core::mem::size_of::<#bus>() > devmem.len() {
+            if (#offset) + (#count_expr) * ::core::mem::size_of::<#bus>() > devmem.len() {
                 return None;
             }
         });
@@ -370,17 +386,53 @@ fn gen_register_methods(vis: &Visibility, bus: &Type, entry: &RegisterEntry) -> 
     let set_fn = format_ident!("set_{}", name);
     let modify_fn = format_ident!("modify_{}", name);
 
+    // Effective offset expression. For arrays it includes an index parameter.
+    // `idx_param` is appended to the method signature when non-empty.
+    let (idx_param, eff_offset, len_method) = match &entry.array_len {
+        Some(n) => {
+            let len_fn = format_ident!("{}_len", name);
+            (
+                quote! { , idx: usize },
+                quote! { ((#offset) + idx * ::core::mem::size_of::<#bus>()) },
+                quote! {
+                    /// Number of elements in this register array.
+                    #[inline(always)]
+                    #vis fn #len_fn(&self) -> usize {
+                        #n
+                    }
+                },
+            )
+        }
+        None => (
+            TokenStream2::new(),
+            quote! { (#offset) },
+            TokenStream2::new(),
+        ),
+    };
+
+    // Runtime bounds check (only for arrays).
+    let bounds = match &entry.array_len {
+        Some(n) => quote! {
+            assert!(idx < (#n), concat!("index out of bounds for `", stringify!(#name), "`"));
+        },
+        None => TokenStream2::new(),
+    };
+
     let mut methods = quote! {
+        #len_method
+
         /// Returns the offset of the register within the DevMem.
         #[inline(always)]
-        #vis fn #offset_fn(&self) -> usize {
-            #offset
+        #vis fn #offset_fn(&self #idx_param) -> usize {
+            #bounds
+            #eff_offset
         }
 
         /// Returns the address of the register.
         #[inline(always)]
-        #vis fn #address_fn(&self) -> usize {
-            self.devmem.address() + #offset
+        #vis fn #address_fn(&self #idx_param) -> usize {
+            #bounds
+            self.devmem.address() + #eff_offset
         }
     };
 
@@ -388,8 +440,9 @@ fn gen_register_methods(vis: &Visibility, bus: &Type, entry: &RegisterEntry) -> 
         methods.extend(quote! {
             #(#attrs)*
             #[inline(always)]
-            #vis fn #name(&self) -> #ty {
-                unsafe { ::core::ptr::read_volatile(self.devmem.as_ptr().add(#offset) as *const #bus) as #ty }
+            #vis fn #name(&self #idx_param) -> #ty {
+                #bounds
+                unsafe { ::core::ptr::read_volatile(self.devmem.as_ptr().add(#eff_offset) as *const #bus) as #ty }
             }
         });
     }
@@ -398,8 +451,9 @@ fn gen_register_methods(vis: &Visibility, bus: &Type, entry: &RegisterEntry) -> 
         methods.extend(quote! {
             #(#attrs)*
             #[inline(always)]
-            #vis fn #set_fn(&mut self, value: #ty) {
-                unsafe { ::core::ptr::write_volatile(self.devmem.as_ptr().add(#offset) as *mut #bus, value as #bus) }
+            #vis fn #set_fn(&mut self #idx_param, value: #ty) {
+                #bounds
+                unsafe { ::core::ptr::write_volatile(self.devmem.as_ptr().add(#eff_offset) as *mut #bus, value as #bus) }
             }
         });
     }
@@ -408,9 +462,10 @@ fn gen_register_methods(vis: &Visibility, bus: &Type, entry: &RegisterEntry) -> 
         methods.extend(quote! {
             #(#attrs)*
             #[inline(always)]
-            #vis fn #modify_fn(&mut self, f: impl FnOnce(#ty) -> #ty) {
+            #vis fn #modify_fn(&mut self #idx_param, f: impl FnOnce(#ty) -> #ty) {
+                #bounds
                 unsafe {
-                    let ptr = self.devmem.as_ptr().add(#offset);
+                    let ptr = self.devmem.as_ptr().add(#eff_offset);
                     let val = ::core::ptr::read_volatile(ptr as *const #bus) as #ty;
                     ::core::ptr::write_volatile(ptr as *mut #bus, f(val) as #bus);
                 }
@@ -442,6 +497,23 @@ fn gen_bitfield_methods(
     let getter_name = format_ident!("{}_{}", reg_name, bf.name);
     let setter_name = format_ident!("set_{}_{}", reg_name, bf.name);
 
+    // Array vs scalar register: bitfield methods take an extra `idx`
+    // parameter when the underlying register is an array.
+    let (idx_param, eff_offset, bounds) = match &entry.array_len {
+        Some(n) => (
+            quote! { , idx: usize },
+            quote! { ((#offset) + idx * ::core::mem::size_of::<#bus>()) },
+            quote! {
+                assert!(idx < (#n), concat!("index out of bounds for `", stringify!(#reg_name), "`"));
+            },
+        ),
+        None => (
+            TokenStream2::new(),
+            quote! { (#offset) },
+            TokenStream2::new(),
+        ),
+    };
+
     let hi_expr: TokenStream2 = if bf.hi == bf.lo {
         // Single bit — same expression
         quote! { #hi }
@@ -456,14 +528,14 @@ fn gen_bitfield_methods(
     };
 
     let read_raw = quote! {
-        let raw = unsafe { ::core::ptr::read_volatile(self.devmem.as_ptr().add(#offset) as *const #bus) } as #ty;
+        let raw = unsafe { ::core::ptr::read_volatile(self.devmem.as_ptr().add(#eff_offset) as *const #bus) } as #ty;
     };
 
     let rmw_body = |value_expr: TokenStream2| {
         quote! {
             #width_and_mask
             unsafe {
-                let ptr = self.devmem.as_ptr().add(#offset);
+                let ptr = self.devmem.as_ptr().add(#eff_offset);
                 let old = ::core::ptr::read_volatile(ptr as *const #bus) as #ty;
                 let new = (old & !(mask << (#lo))) | ((#value_expr & mask) << (#lo));
                 ::core::ptr::write_volatile(ptr as *mut #bus, new as #bus);
@@ -479,7 +551,8 @@ fn gen_bitfield_methods(
                 methods.extend(quote! {
                     #(#bf_attrs)*
                     #[inline(always)]
-                    #vis fn #getter_name(&self) -> #ty {
+                    #vis fn #getter_name(&self #idx_param) -> #ty {
+                        #bounds
                         #read_raw
                         #width_and_mask
                         (raw >> (#lo)) & mask
@@ -491,7 +564,8 @@ fn gen_bitfield_methods(
                 methods.extend(quote! {
                     #(#bf_attrs)*
                     #[inline(always)]
-                    #vis fn #setter_name(&mut self, value: #ty) {
+                    #vis fn #setter_name(&mut self #idx_param, value: #ty) {
+                        #bounds
                         #rmw
                     }
                 });
@@ -502,7 +576,8 @@ fn gen_bitfield_methods(
                 methods.extend(quote! {
                     #(#bf_attrs)*
                     #[inline(always)]
-                    #vis fn #getter_name(&self) -> bool {
+                    #vis fn #getter_name(&self #idx_param) -> bool {
+                        #bounds
                         #read_raw
                         #width_and_mask
                         ((raw >> (#lo)) & mask) != 0
@@ -514,7 +589,8 @@ fn gen_bitfield_methods(
                 methods.extend(quote! {
                     #(#bf_attrs)*
                     #[inline(always)]
-                    #vis fn #setter_name(&mut self, value: bool) {
+                    #vis fn #setter_name(&mut self #idx_param, value: bool) {
+                        #bounds
                         let value = value as #ty;
                         #rmw
                     }
@@ -526,7 +602,8 @@ fn gen_bitfield_methods(
                 methods.extend(quote! {
                     #(#bf_attrs)*
                     #[inline(always)]
-                    #vis fn #getter_name(&self) -> #cast_ty {
+                    #vis fn #getter_name(&self #idx_param) -> #cast_ty {
+                        #bounds
                         #read_raw
                         #width_and_mask
                         ((raw >> (#lo)) & mask) as #cast_ty
@@ -538,7 +615,8 @@ fn gen_bitfield_methods(
                 methods.extend(quote! {
                     #(#bf_attrs)*
                     #[inline(always)]
-                    #vis fn #setter_name(&mut self, value: #cast_ty) {
+                    #vis fn #setter_name(&mut self #idx_param, value: #cast_ty) {
+                        #bounds
                         let value = value as #ty;
                         #rmw
                     }
@@ -551,7 +629,8 @@ fn gen_bitfield_methods(
                 methods.extend(quote! {
                     #(#bf_attrs)*
                     #[inline(always)]
-                    #vis fn #getter_name(&self) -> #ename {
+                    #vis fn #getter_name(&self #idx_param) -> #ename {
+                        #bounds
                         #read_raw
                         #width_and_mask
                         #ename::from_raw((raw >> (#lo)) & mask)
@@ -563,7 +642,8 @@ fn gen_bitfield_methods(
                 methods.extend(quote! {
                     #(#bf_attrs)*
                     #[inline(always)]
-                    #vis fn #setter_name(&mut self, value: #ename) {
+                    #vis fn #setter_name(&mut self #idx_param, value: #ename) {
+                        #bounds
                         let value = value.to_raw();
                         #rmw
                     }
@@ -648,20 +728,43 @@ fn gen_web_impl(map: &RegisterMap) -> TokenStream2 {
                 });
             }
 
-            register_infos.extend(quote! {
+            let push_one = quote! {
                 {
                     let mut bitfields = Vec::new();
                     #bitfield_pushes
                     regs.push(::ddevmem::web::RegisterInfo {
-                        name: #reg_name_str,
+                        name: __name,
                         doc: #doc_str,
-                        offset: #offset,
+                        offset: __off,
                         access: #access_str,
                         width: ::core::mem::size_of::<#ty>() * 8,
                         bitfields,
                     });
                 }
-            });
+            };
+
+            match &entry.array_len {
+                None => {
+                    register_infos.extend(quote! {
+                        {
+                            let __name: ::std::string::String =
+                                ::std::string::String::from(#reg_name_str);
+                            let __off: usize = #offset;
+                            #push_one
+                        }
+                    });
+                }
+                Some(n) => {
+                    register_infos.extend(quote! {
+                        for __i in 0..(#n) {
+                            let __name: ::std::string::String =
+                                ::std::format!("{}[{}]", #reg_name_str, __i);
+                            let __off: usize = (#offset) + __i * ::core::mem::size_of::<#bus>();
+                            #push_one
+                        }
+                    });
+                }
+            }
         }
 
         let name_str = name.to_string();
