@@ -21,8 +21,8 @@
 //! | `register-map`   | yes     | [`register_map!`] macro with bitfields and typed accessors. |
 //! | `web`            | no      | Web UI for viewing/editing registers via [`axum`]. |
 //!
-//! Enable exactly one of `device` or `emulator`. Both enabled simultaneously is
-//! a compile error.
+//! Enable exactly one of `device` or `emulator`. When both are enabled
+//! simultaneously the `emulator` backend takes precedence.
 //!
 //! ## Quick start
 //!

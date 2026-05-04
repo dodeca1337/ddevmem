@@ -49,7 +49,7 @@ ddevmem = { path = ".", features = ["emulator"] }
 minify-html = "0.18.1"
 
 [features]
-default = ["device", "register-map", "web"]
+default = ["device", "register-map"]
 register-map = ["ddevmem-macros"]
 device = ["memmap2"]
 emulator = []

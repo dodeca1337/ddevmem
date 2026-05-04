@@ -289,7 +289,12 @@ fn extract_doc_string(attrs: &[Attribute]) -> String {
                     ..
                 }) = &nv.value
                 {
-                    doc.push_str(&s.value());
+                    let line = s.value();
+                    let trimmed = line.trim();
+                    if !doc.is_empty() {
+                        doc.push('\n');
+                    }
+                    doc.push_str(trimmed);
                 }
             }
         }
@@ -297,9 +302,10 @@ fn extract_doc_string(attrs: &[Attribute]) -> String {
     doc
 }
 
-fn gen_enum_defs(vis: &Visibility, ty: &Type, entries: &[RegisterEntry]) -> TokenStream2 {
+fn gen_enum_defs(vis: &Visibility, entries: &[RegisterEntry]) -> TokenStream2 {
     let mut tokens = TokenStream2::new();
     for entry in entries {
+        let ty = &entry.ty;
         for bf in &entry.bitfields {
             if let FieldType::Enum(enum_def) = &bf.field_type {
                 let ename = &enum_def.name;
@@ -514,16 +520,9 @@ fn gen_bitfield_methods(
         ),
     };
 
-    let hi_expr: TokenStream2 = if bf.hi == bf.lo {
-        // Single bit — same expression
-        quote! { #hi }
-    } else {
-        quote! { #hi }
-    };
-
     // Width and mask computation
     let width_and_mask = quote! {
-        let width: u32 = (#hi_expr) - (#lo) + 1;
+        let width: u32 = (#hi) - (#lo) + 1;
         let mask: #ty = if width >= <#ty>::BITS { <#ty>::MAX } else { (1 << width) - 1 };
     };
 
@@ -807,7 +806,7 @@ fn generate(map: RegisterMap) -> TokenStream2 {
     let bus = &map.bus;
 
     // Generate enum definitions at module scope
-    let enum_defs = gen_enum_defs(vis, &map.entries[0].ty, &map.entries);
+    let enum_defs = gen_enum_defs(vis, &map.entries);
 
     // Bounds checks in new()
     let bounds_checks = gen_bounds_checks(bus, &map.entries);

@@ -14,7 +14,7 @@ with volatile read/write semantics suitable for memory-mapped I/O (MMIO).
 | `register-map` | ✓       | Declarative `register_map!` macro with optional bitfields and typed accessors. |
 | `web`          |         | Web UI for viewing/editing registers via `axum` (optional auth).               |
 
-> **Note:** enable exactly one of `device` or `emulator`. Enabling both is a compile error.
+> **Note:** enable exactly one of `device` or `emulator`. When both are enabled simultaneously, the `emulator` backend takes precedence.
 
 ## Installation
 

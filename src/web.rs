@@ -232,11 +232,15 @@ struct WriteReq {
 /// differing byte and lets an attacker recover the secret one byte at a time
 /// by timing responses.
 ///
+/// This implementation compares lengths with a constant-time integer
+/// comparison and then compares bytes up to `min(a.len(), b.len())`, so an
+/// attacker cannot distinguish a length mismatch from a content mismatch via
+/// timing.
+///
 /// ```
 /// # use ddevmem::web::ct_eq;
 /// assert!(ct_eq("hunter2", "hunter2"));
 /// assert!(!ct_eq("hunter2", "hunter3"));
-/// // Different lengths are still safe to compare:
 /// assert!(!ct_eq("admin", "administrator"));
 /// ```
 ///
@@ -247,8 +251,15 @@ struct WriteReq {
 /// ct_eq(user, "admin") & ct_eq(pass, "hunter2")
 /// ```
 pub fn ct_eq(a: &str, b: &str) -> bool {
-    use subtle::ConstantTimeEq;
-    a.as_bytes().ct_eq(b.as_bytes()).into()
+    use subtle::{Choice, ConstantTimeEq};
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    // Constant-time length comparison via integer CT-eq (avoids branching on length).
+    let len_eq: Choice = (a.len() as u64).ct_eq(&(b.len() as u64));
+    // Compare content up to the shorter length; length_eq gates the result.
+    let min = a.len().min(b.len());
+    let content_eq: Choice = a[..min].ct_eq(&b[..min]);
+    (len_eq & content_eq).into()
 }
 
 /// Boxed future returned by an async authentication callback.
@@ -284,20 +295,19 @@ async fn index_page() -> Html<&'static str> {
 
 type DynMap = Arc<Mutex<dyn RegisterMapInfo + Send>>;
 
-struct WebUiState {
-    maps: Vec<(String, DynMap)>,
-    auth: Option<AuthFn>,
-    title: Option<String>,
+#[derive(Clone)]
+struct MapHandle {
+    slug: String,
+    /// Cached at `add()` time so `api_list` never needs to lock.
+    name: String,
+    regs: DynMap,
 }
 
-impl Clone for WebUiState {
-    fn clone(&self) -> Self {
-        Self {
-            maps: self.maps.clone(),
-            auth: self.auth.clone(),
-            title: self.title.clone(),
-        }
-    }
+#[derive(Clone)]
+struct WebUiState {
+    maps: Vec<MapHandle>,
+    auth: Option<AuthFn>,
+    title: Option<String>,
 }
 
 /// Builder for hosting one or more register maps as a web UI.
@@ -309,7 +319,7 @@ impl Clone for WebUiState {
 /// # use std::sync::Arc;
 /// # use tokio::sync::Mutex;
 /// # use ddevmem::{register_map, DevMem};
-/// # use ddevmem::web::WebUi;
+/// # use ddevmem::web::{WebUi, ct_eq};
 /// # register_map! { pub unsafe map Spi (u32) { 0x00 => rw cr: u32 } }
 /// # register_map! { pub unsafe map Gpio (u32) { 0x00 => rw data: u32 } }
 /// # async fn run() {
@@ -322,13 +332,13 @@ impl Clone for WebUiState {
 ///     WebUi::new()
 ///         .add("spi", Arc::new(Mutex::new(spi)))
 ///         .add("gpio", Arc::new(Mutex::new(gpio)))
-///         .with_auth(|u, p| async move { u == "admin" && p == "secret" })
+///         .with_auth(|u, p| async move { ct_eq(&u, "admin") & ct_eq(&p, "secret") })
 ///         .build(),
 /// );
 /// # }
 /// ```
 pub struct WebUi {
-    maps: Vec<(String, DynMap)>,
+    maps: Vec<MapHandle>,
     auth: Option<AuthFn>,
     title: Option<String>,
 }
@@ -352,6 +362,8 @@ impl WebUi {
     /// Register a map under the given URL slug (e.g. `"spi"`, `"gpio"`).
     ///
     /// The slug must consist of ASCII alphanumerics, hyphens, or underscores.
+    /// The map name is cached here so that `GET /api/maps` never has to acquire
+    /// any lock.
     ///
     /// # Panics
     ///
@@ -369,7 +381,12 @@ impl WebUi {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
             "slug must be non-empty ASCII [a-zA-Z0-9_-], got: {slug:?}"
         );
-        self.maps.push((slug.to_owned(), regs as DynMap));
+        // try_lock() succeeds here because the server isn't running yet.
+        let name = regs
+            .try_lock()
+            .map(|g| g.map_name().to_owned())
+            .unwrap_or_else(|_| slug.to_owned());
+        self.maps.push(MapHandle { slug: slug.to_owned(), name, regs: regs as DynMap });
         self
     }
 
@@ -441,8 +458,8 @@ impl WebUi {
     /// - `POST /api/{slug}/write` — body `{ offset, value }`, returns `200 OK`
     pub fn build(self) -> Router {
         let state = WebUiState {
-            maps: self.maps,
-            auth: self.auth,
+            maps:  self.maps,
+            auth:  self.auth,
             title: self.title,
         };
 
@@ -497,24 +514,19 @@ struct MapList {
 }
 
 async fn api_list(State(state): State<WebUiState>) -> Json<MapList> {
-    let mut entries = Vec::with_capacity(state.maps.len());
-    for (slug, regs) in &state.maps {
-        let regs = regs.lock().await;
-        entries.push(MapEntry {
-            slug: slug.clone(),
-            name: regs.map_name().to_owned(),
-        });
-    }
-    Json(MapList {
-        title: state.title.clone(),
-        maps: entries,
-    })
+    // Names are cached at add() time — no locking required here.
+    let entries = state
+        .maps
+        .iter()
+        .map(|m| MapEntry { slug: m.slug.clone(), name: m.name.clone() })
+        .collect();
+    Json(MapList { title: state.title.clone(), maps: entries })
 }
 
-fn find_map<'a>(maps: &'a [(String, DynMap)], slug: &str) -> Result<&'a DynMap, StatusCode> {
+fn find_map<'a>(maps: &'a [MapHandle], slug: &str) -> Result<&'a DynMap, StatusCode> {
     maps.iter()
-        .find(|(s, _)| *s == slug)
-        .map(|(_, regs)| regs)
+        .find(|m| m.slug == slug)
+        .map(|m| &m.regs)
         .ok_or(StatusCode::NOT_FOUND)
 }
 

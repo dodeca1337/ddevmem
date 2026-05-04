@@ -1,5 +1,5 @@
 use bytemuck::{AnyBitPattern, NoUninit};
-use std::{fmt, io::Error as IOError};
+use std::{cell::UnsafeCell, fmt, io::Error as IOError};
 
 #[cfg(all(feature = "device", not(feature = "emulator")))]
 use memmap2::{MmapMut, MmapOptions};
@@ -60,16 +60,27 @@ impl From<Error> for IOError {
 ///
 /// # Thread safety
 ///
-/// `DevMem` is neither [`Send`] nor [`Sync`] by default. Wrap it in an
-/// [`Arc`](std::sync::Arc) and protect mutable access with a lock if you need
-/// cross-thread sharing.
+/// `DevMem` is `Send + Sync` but provides no internal synchronization.
+/// Wrap it in an [`Arc`](std::sync::Arc) and protect all register accesses
+/// with a lock (e.g. `tokio::sync::Mutex`) when sharing across threads.
 pub struct DevMem {
+    /// `UnsafeCell` is required for interior mutability: volatile writes go
+    /// through `&self` (necessary when `DevMem` is shared via `Arc`), and the
+    /// Rust memory model requires `UnsafeCell` to permit mutation through a
+    /// shared reference without invoking undefined behaviour.
     #[cfg(feature = "emulator")]
-    mmap: Vec<u8>,
+    mmap: UnsafeCell<Vec<u8>>,
     #[cfg(all(feature = "device", not(feature = "emulator")))]
-    mmap: MmapMut,
+    mmap: UnsafeCell<MmapMut>,
     address: usize,
 }
+
+// SAFETY: Volatile MMIO accesses are inherently thread-unsafe at the hardware
+// level. We declare Send + Sync here and delegate synchronization responsibility
+// to the caller (Arc<Mutex<RegisterMap>> is the recommended pattern). This
+// mirrors how AtomicXxx types work: they use UnsafeCell and assert Sync.
+unsafe impl Send for DevMem {}
+unsafe impl Sync for DevMem {}
 
 impl DevMem {
     /// Opens and memory-maps a physical address range.
@@ -114,13 +125,12 @@ impl DevMem {
                 .map_mut(&file)
                 .map_err(Error::CantMmapFile)?;
 
-            Ok(Self { mmap, address })
+            Ok(Self { mmap: UnsafeCell::new(mmap), address })
         }
 
         #[cfg(feature = "emulator")]
         {
-            let mmap = vec![0; size];
-            Ok(Self { mmap, address })
+            Ok(Self { mmap: UnsafeCell::new(vec![0; size]), address })
         }
     }
 
@@ -133,23 +143,28 @@ impl DevMem {
     /// Length of the mapped region in bytes.
     #[inline(always)]
     pub fn len(&self) -> usize {
-        self.mmap.len()
+        // SAFETY: no aliasing &mut to the inner buffer exists at this call site.
+        unsafe { (&*self.mmap.get()).len() }
     }
 
     /// Returns `true` when the mapped region has zero length.
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.mmap.is_empty()
+        // SAFETY: same as len().
+        unsafe { (&*self.mmap.get()).is_empty() }
     }
 
     /// Raw pointer to the first byte of the mapped region.
     ///
     /// The returned pointer remains valid for the lifetime of `self`.
     /// Use [`std::ptr::read_volatile`] / [`std::ptr::write_volatile`] to
-    /// access MMIO registers through this pointer.
+    /// access MMIO registers through this pointer. The caller must ensure no
+    /// conflicting accesses alias the same memory concurrently.
     #[inline(always)]
     pub fn as_ptr(&self) -> *mut u8 {
-        self.mmap.as_ptr() as *mut u8
+        // SAFETY: UnsafeCell grants permission to derive a *mut from &self.
+        // Callers are responsible for synchronization.
+        unsafe { (*self.mmap.get()).as_ptr() as *mut u8 }
     }
 
     /// Performs a volatile read of type `T` at `offset` bytes from the base.
@@ -209,46 +224,41 @@ impl DevMem {
     ///
     /// Each element is read with a separate [`std::ptr::read_volatile`].
     ///
-    /// # Panics
-    ///
-    /// Panics if `offset + size_of::<T>() * buf.len()` exceeds the mapped
-    /// length.
+    /// Returns `None` if `offset + size_of::<T>() * buf.len()` exceeds the
+    /// mapped length.
     #[inline(always)]
-    pub fn read_slice<T: AnyBitPattern>(&self, offset: usize, buf: &mut [T]) {
-        assert!(
-            offset + std::mem::size_of_val(buf) <= self.len(),
-            "read_slice: range out of bounds"
-        );
+    pub fn read_slice<T: AnyBitPattern>(&self, offset: usize, buf: &mut [T]) -> Option<()> {
+        if offset + std::mem::size_of_val(buf) > self.len() {
+            return None;
+        }
         for (i, slot) in buf.iter_mut().enumerate() {
             unsafe {
                 *slot = std::ptr::read_volatile(self.as_ptr().add(offset).cast::<T>().add(i));
             }
         }
+        Some(())
     }
 
     /// Volatile write of `buf.len()` consecutive elements of type `T` starting
     /// at `offset`.
     ///
     /// Each element is written with a separate [`std::ptr::write_volatile`].
+    /// `T: Copy` is required so that each element can be passed by value to
+    /// `write_volatile` without affecting the original slice.
     ///
-    /// # Panics
-    ///
-    /// Panics if `offset + size_of::<T>() * buf.len()` exceeds the mapped
-    /// length.
+    /// Returns `None` if `offset + size_of::<T>() * buf.len()` exceeds the
+    /// mapped length.
     #[inline(always)]
-    pub fn write_slice<T: NoUninit>(&self, offset: usize, buf: &[T]) {
-        assert!(
-            offset + std::mem::size_of_val(buf) <= self.len(),
-            "write_slice: range out of bounds"
-        );
+    pub fn write_slice<T: NoUninit + Copy>(&self, offset: usize, buf: &[T]) -> Option<()> {
+        if offset + std::mem::size_of_val(buf) > self.len() {
+            return None;
+        }
         for (i, val) in buf.iter().enumerate() {
             unsafe {
-                std::ptr::write_volatile(
-                    self.as_ptr().add(offset).cast::<T>().add(i),
-                    std::ptr::read(val),
-                );
+                std::ptr::write_volatile(self.as_ptr().add(offset).cast::<T>().add(i), *val);
             }
         }
+        Some(())
     }
 }
 
