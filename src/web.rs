@@ -287,6 +287,7 @@ type DynMap = Arc<Mutex<dyn RegisterMapInfo + Send>>;
 struct WebUiState {
     maps: Vec<(String, DynMap)>,
     auth: Option<AuthFn>,
+    title: Option<String>,
 }
 
 impl Clone for WebUiState {
@@ -294,6 +295,7 @@ impl Clone for WebUiState {
         Self {
             maps: self.maps.clone(),
             auth: self.auth.clone(),
+            title: self.title.clone(),
         }
     }
 }
@@ -328,6 +330,7 @@ impl Clone for WebUiState {
 pub struct WebUi {
     maps: Vec<(String, DynMap)>,
     auth: Option<AuthFn>,
+    title: Option<String>,
 }
 
 impl Default for WebUi {
@@ -342,6 +345,7 @@ impl WebUi {
         Self {
             maps: Vec::new(),
             auth: None,
+            title: None,
         }
     }
 
@@ -401,6 +405,32 @@ impl WebUi {
         self
     }
 
+    /// Override the title shown in the browser tab and in the page header.
+    ///
+    /// When unset, the UI falls back to the built-in default
+    /// (`"ddevmem — Register Maps"` in multi-map mode, or the map's own
+    /// name in single-map mode).
+    ///
+    /// ```rust,no_run
+    /// # use std::sync::Arc;
+    /// # use tokio::sync::Mutex;
+    /// # use ddevmem::{register_map, DevMem};
+    /// # use ddevmem::web::WebUi;
+    /// # register_map! { pub unsafe map R (u32) { 0x00 => rw x: u32 } }
+    /// # async fn run() {
+    /// # let d = unsafe { DevMem::new(0x0, Some(256)).unwrap() };
+    /// # let r = unsafe { R::new(Arc::new(d)).unwrap() };
+    /// let app = WebUi::new()
+    ///     .add("r", Arc::new(Mutex::new(r)))
+    ///     .with_title("Acme SoC — Hardware Registers")
+    ///     .build();
+    /// # }
+    /// ```
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
     /// Consume the builder and produce an [`axum::Router`].
     ///
     /// The router serves:
@@ -413,6 +443,7 @@ impl WebUi {
         let state = WebUiState {
             maps: self.maps,
             auth: self.auth,
+            title: self.title,
         };
 
         let api = Router::new()
@@ -456,7 +487,16 @@ struct MapEntry {
     name: String,
 }
 
-async fn api_list(State(state): State<WebUiState>) -> Json<Vec<MapEntry>> {
+#[derive(Serialize)]
+struct MapList {
+    /// User-supplied title (set via [`WebUi::with_title`]). `None` lets
+    /// the front-end pick its built-in default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    maps: Vec<MapEntry>,
+}
+
+async fn api_list(State(state): State<WebUiState>) -> Json<MapList> {
     let mut entries = Vec::with_capacity(state.maps.len());
     for (slug, regs) in &state.maps {
         let regs = regs.lock().await;
@@ -465,7 +505,10 @@ async fn api_list(State(state): State<WebUiState>) -> Json<Vec<MapEntry>> {
             name: regs.map_name().to_owned(),
         });
     }
-    Json(entries)
+    Json(MapList {
+        title: state.title.clone(),
+        maps: entries,
+    })
 }
 
 fn find_map<'a>(maps: &'a [(String, DynMap)], slug: &str) -> Result<&'a DynMap, StatusCode> {

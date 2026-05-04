@@ -323,19 +323,35 @@
   button:hover  { background: var(--button-primary-hover); border-color: var(--button-primary-hover); }
   button:active { background: var(--button-primary-active); border-color: var(--button-primary-active); }
   /*
-   * Focus ring (Carbon spec, button-theme mixin):
+   * Focus ring — verbatim from @carbon/styles button-theme mixin
+   * (packages/styles/scss/components/button/_mixins.scss):
+   *
    *   border-color: $button-focus-color;
    *   box-shadow:
-   *     inset 0 0 0 $button-outline-width  $button-focus-color,  // 1 px
-   *     inset 0 0 0 $button-border-width   $background;          // 2 px
+   *     inset 0 0 0 $button-outline-width $button-focus-color,
+   *     inset 0 0 0 $button-border-width  $background;
    *
-   * The first (smaller) focus shadow paints on top of the second (larger)
-   * background shadow. Net visible: 1 px focus stroke at the very edge +
-   * 1 px background ring just inside it. With the spreads swapped the focus
-   * shadow would fully cover the contrast ring — e.g. on light-theme Primary
-   * (focus colour == button colour) the indicator disappears entirely.
+   * with $button-outline-width: 1px and $button-border-width: 2px
+   * (packages/styles/scss/components/button/_vars.scss).
+   *
+   * The first listed shadow paints on top of the second, so the
+   * visible result is:
+   *   0..1 px from edge — focus colour (outer line)
+   *   1..2 px           — background colour (inner line, visible
+   *                        only where the first shadow doesn't reach)
+   * That's the characteristic two-line indicator: an outer focus
+   * stripe + an inner gap of the page background.
+   *
+   * The selector list raises specificity to (0,2,1) so the focus
+   * indicator wins over `.btn-secondary:hover`, `.btn-ghost:active`
+   * etc. — otherwise hover/active rules would reset border-color
+   * and erase the outer line while the user is pressing the button.
    */
-  button:focus  {
+  button:focus,
+  button.btn-secondary:focus,
+  button.btn-tertiary:focus,
+  button.btn-ghost:focus,
+  button.btn-icon-only:focus {
     outline: none;
     border-color: var(--focus);
     box-shadow: inset 0 0 0 1px var(--focus),
@@ -385,13 +401,8 @@
   }
   button.btn-ghost:hover  { background: var(--layer-hover);  color: var(--link-hover); border-color: transparent; }
   button.btn-ghost:active { background: var(--layer-active); color: var(--link-hover); border-color: transparent; }
-  /* Ghost buttons have no border to absorb focus, so Carbon uses a single
-     1 px focus stroke (no inner bg ring, since the button bg is transparent
-     and the inner ring would not contrast against the page). */
-  button.btn-ghost:focus  {
-    border-color: var(--focus);
-    box-shadow: inset 0 0 0 1px var(--focus);
-  }
+  /* Ghost focus is handled by the shared `button:focus` selector list
+     above so its specificity beats `.btn-ghost:hover/:active`. */
 
   /* Icon-only ghost button (Carbon `.cds--btn--icon-only`): square 2 rem,
      symmetric padding, centred 16 px glyph. */
@@ -492,6 +503,11 @@
   .sidebar a:hover .nav-addr,
   .sidebar a.active .nav-addr { color: var(--text-secondary); }
   .sidebar a:hover { background: var(--layer-hover); color: var(--text-primary); }
+  /* Carbon side-nav focus: 2 px inset stroke matching the focus token. */
+  .sidebar a:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
   .sidebar a.active {
     background: var(--layer-02); color: var(--text-primary);
     border-left-color: var(--button-primary);
@@ -541,7 +557,7 @@
 <body>
 
 <header class="app-header" role="banner">
-  <span class="brand">
+  <span class="brand" id="brand">
     ddevmem
     <span class="brand-sub">· Register Map</span>
   </span>
@@ -611,12 +627,29 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+// Replace the UI-Shell brand with a user-supplied title. The original
+// "ddevmem · Register Map" markup is split into two spans so the
+// theming CSS can dim the suffix; once a custom title is set we drop
+// that decoration and show the user's string verbatim.
+function setBrand(title) {
+  const el = $('brand');
+  if (!el) return;
+  el.textContent = title;
+}
+
 async function init() {
   try {
     // Try multi-map mode first (/api/maps), fall back to single-map (/api/info)
     let multiMode = false;
+    let customTitle = null;
     try {
-      const maps = await api('/maps');
+      const resp = await api('/maps');
+      // The endpoint returns either the legacy bare array `[{slug,name},…]`
+      // or the new wrapper `{ title, maps: […] }`. Accept both.
+      const maps = Array.isArray(resp) ? resp : resp.maps;
+      if (!Array.isArray(resp) && typeof resp.title === 'string') {
+        customTitle = resp.title;
+      }
       const infos = await Promise.all(maps.map(m => api('/' + m.slug + '/info')));
       allMaps = maps.map((m, i) => ({
         slug: m.slug, name: m.name, info: infos[i],
@@ -629,11 +662,15 @@ async function init() {
     }
 
     if (multiMode) {
-      $('title').textContent = 'ddevmem — Register Maps';
+      const heading = customTitle || 'ddevmem — Register Maps';
+      $('title').textContent = heading;
+      document.title = heading;
+      if (customTitle) setBrand(customTitle);
       $('meta').textContent = allMaps.length + ' register map(s)';
     } else {
       const info = allMaps[0].info;
       $('title').textContent = info.name + ' — Register Map';
+      document.title = info.name + ' — Register Map';
       $('meta').textContent = 'Base: ' + hexStr(info.base_address, 32)
         + '  |  Bus width: ' + (info.bus_width * 8) + ' bit'
         + '  |  ' + info.registers.length + ' register(s)';
@@ -645,6 +682,18 @@ async function init() {
     $('maps').innerHTML = '<div class="error">Failed to load: ' + escHtml(e.message) + '</div>';
   }
 }
+
+/*
+ * Firefox and Safari do not move keyboard focus to <button> on click \u2014
+ * `:focus` only fires on Tab navigation. Carbon explicitly relies on
+ * pointerdown-driven focus to keep the focus indicator visible while
+ * the user is pressing the button. We delegate from the document so
+ * dynamically rendered buttons (re-created by renderAll) are covered.
+ */
+document.addEventListener('pointerdown', (e) => {
+  const btn = e.target.closest('button');
+  if (btn && !btn.disabled) btn.focus();
+});
 
 function renderAll(showHeaders) {
   const container = $('maps');
@@ -941,7 +990,10 @@ async function dumpMaps(maps, statusId) {
     lines.push('# Date: ' + new Date().toISOString());
     if (multi) lines.push('# Maps: ' + maps.length);
     lines.push('');
-    let fileName;
+    // For a single map the file is named after the map itself; for a
+    // multi-map dump (e.g. "Dump all") we use a generic prefix instead of
+    // accidentally taking the first map's name.
+    let fileName = multi ? 'ddevmem-all' : null;
     for (const map of maps) {
       const info = map.info;
       if (multi) {
@@ -949,7 +1001,11 @@ async function dumpMaps(maps, statusId) {
       } else {
         lines[0] = '# ' + info.name + ' register dump';
       }
-      if (!fileName) fileName = info.name;
+      if (!fileName) {
+        // Single-map dump: include the base address so dumps from
+        // different instances of the same peripheral don't collide.
+        fileName = info.name + '@' + hexStr(info.base_address, 32);
+      }
       lines.push('# Base address: ' + hexStr(info.base_address, 32));
       lines.push('# Bus width: ' + (info.bus_width * 8) + ' bit');
       lines.push('');

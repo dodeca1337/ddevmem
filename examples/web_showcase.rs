@@ -318,6 +318,7 @@ async fn main() {
     }
 
     let regs_router = ddevmem::web::WebUi::new()
+        .with_title("ddevmem showcase — UART · ADC · I2C · DMA")
         .add("uart", Arc::new(Mutex::new(uart)))
         .add("adc", Arc::new(Mutex::new(adc)))
         .add("i2c", Arc::new(Mutex::new(i2c)))
