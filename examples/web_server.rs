@@ -1,7 +1,7 @@
 //! Example: web UI for viewing and editing registers (emulator backend).
 //!
 //! Run with:
-//!   cargo run --example web_server --no-default-features --features "emulator,web"
+//!   cargo run --example web_server --features web
 //!
 //! Then open http://localhost:3000 in your browser.
 
@@ -49,9 +49,9 @@ async fn main() {
 
     let regs = Arc::new(Mutex::new(regs));
 
-    // The router has no fixed root — nest it at any path.
-    // Use .nest("/", ...) to serve from the root, or any other prefix.
-    let app = axum::Router::new().nest("/", ddevmem::web::WebUi::new().add("pwm", regs).build());
+    // The returned router serves from its own root; use it directly, or
+    // mount it under a prefix with `axum::Router::new().nest("/hw", ...)`.
+    let app = ddevmem::web::WebUi::new().add("pwm", regs).build();
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("Register map web UI at http://localhost:3000/");

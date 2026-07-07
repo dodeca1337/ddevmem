@@ -10,31 +10,33 @@ with volatile read/write semantics suitable for memory-mapped I/O (MMIO).
 | Feature        | Default | Description                                                                    |
 | -------------- | ------- | ------------------------------------------------------------------------------ |
 | `device`       | ✓       | Real `/dev/mem` backend via `memmap2`.                                         |
-| `emulator`     |         | Heap-backed `Vec<u8>` for testing without hardware.                            |
+| `emulator`     |         | Page-aligned heap buffer for testing without hardware.                         |
 | `register-map` | ✓       | Declarative `register_map!` macro with optional bitfields and typed accessors. |
 | `web`          |         | Web UI for viewing/editing registers via `axum` (optional auth).               |
 
-> **Note:** enable exactly one of `device` or `emulator`. When both are enabled simultaneously, the `emulator` backend takes precedence.
+> **Note:** when both `device` and `emulator` are enabled, the `emulator`
+> backend takes precedence. This lets tests and examples opt into emulation
+> through dev-dependencies without touching default features.
 
 ## Installation
 
 ```toml
 [dependencies]
-ddevmem = "0.4.1"
+ddevmem = "0.5.0"
 ```
 
 Or with specific features:
 
 ```toml
 [dependencies]
-ddevmem = { version = "0.4.1", default-features = false, features = ["emulator", "register-map"] }
+ddevmem = { version = "0.5.0", default-features = false, features = ["emulator", "register-map"] }
 ```
 
 With the web UI:
 
 ```toml
 [dependencies]
-ddevmem = { version = "0.4.1", features = ["web"] }
+ddevmem = { version = "0.5.0", features = ["web"] }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -227,7 +229,7 @@ register_map! {
 | `$offset`      | Byte offset of the register (`0x00`, `0x04`, …).             |
 | `$kind`        | `rw` (read-write), `ro` (read-only), or `wo` (write-only).   |
 | `$name`        | Register name — drives the generated method names.           |
-| `$type`        | Register type (`u8`, `u16`, `u32`, `u64`).                   |
+| `$type`        | Register type (`u8`, `u16`, `u32`, `u64`, `usize`); at most as wide as the bus. |
 
 **Bitfield syntax:**
 
@@ -240,8 +242,8 @@ field_name: lo..hi          // exclusive upper bound (Rust convention)
 A bitfield can carry an `as <type>` suffix to produce typed getters/setters:
 
 ```text
-field: bit        as bool              // getter → bool, setter accepts bool
-field: lo..=hi    as u8                // getter → u8,   setter accepts u8 (any int type)
+field: bit        as bool              // getter → bool, setter accepts bool (single-bit only)
+field: lo..=hi    as u8                // getter → u8,   setter accepts u8 (any unsigned int)
 field: lo..=hi    as enum Name {       // getter → Name, setter accepts Name
     Variant = value,                   //   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     ...,                               //   with from_raw() / to_raw() methods
@@ -250,6 +252,16 @@ field: lo..=hi    as enum Name {       // getter → Name, setter accepts Name
 
 Bits not covered by any field declaration are left untouched during
 read-modify-write — there is no need to declare reserved gaps.
+
+On **write-only registers** a read-modify-write is impossible, so a bitfield
+setter writes the field value with all other bits zero (the usual semantics
+of self-clearing command registers).
+
+The macro validates the declaration at compile time: misaligned offsets, bit
+ranges that exceed the register type, `as bool` on multi-bit fields, enum
+values that don't fit their field, casts narrower than the field, and name
+collisions between generated methods are all reported as compile errors
+pointing at the offending token.
 
 **Register arrays.** A register declared as `[T; N]` becomes a contiguous
 run of `N` identical registers at `offset, offset + size_of::<bus>(), …`.
@@ -468,8 +480,17 @@ async fn run(regs: Arc<Mutex<R>>) {
 | GET    | `/`                 | —                              | HTML single-page app                                  |
 | GET    | `/api/maps`         | —                              | `{ title?: string, maps: [{ slug, name }, ...] }`     |
 | GET    | `/api/{slug}/info`  | —                              | `{ name, bus_width, base_address, registers: [...] }` |
-| POST   | `/api/{slug}/read`  | `{ "offset": 0 }`              | `{ "value": 12345 }`                                  |
+| POST   | `/api/{slug}/read`  | `{ "offset": 0 }`              | `{ "value": 12345, "hex": "0x3039" }`                 |
 | POST   | `/api/{slug}/write` | `{ "offset": 0, "value": 42 }` | `200 OK`                                              |
+
+`value` in a write request may be a JSON number or a string (`"0x2A"` /
+`"42"`); the string form carries the full 64-bit range, which JSON numbers
+lose above 2⁵³. Reads return the value in both forms for the same reason.
+
+Requests are validated against the declared map: an offset that does not
+address a readable (respectively writable) register — unknown, misaligned,
+write-only on read, read-only on write — is rejected with `400 Bad Request`,
+and written values must fit the bus width.
 
 **Custom page title:**
 
@@ -541,7 +562,7 @@ allowing you to test register map logic without hardware:
 
 ```rust,no_run
 // Cargo.toml:
-// ddevmem = { version = "0.4.1", default-features = false, features = ["emulator", "register-map"] }
+// ddevmem = { version = "0.5.0", default-features = false, features = ["emulator", "register-map"] }
 
 use std::sync::Arc;
 use ddevmem::{register_map, DevMem};
@@ -568,21 +589,19 @@ assert_eq!(regs.ctrl_run(), 1);
 assert_eq!(regs.ctrl_irq_en(), 0); // other bits untouched
 ```
 
-## Migration from 0.3
+## Migration from 0.4
 
-`ddevmem` 0.4 is a **breaking** release. Key changes:
+`ddevmem` 0.5 is a cleanup release with a handful of **breaking** changes:
 
-| 0.3                                 | 0.4                                |
-| ----------------------------------- | ---------------------------------- |
-| `*reg.get()` / `*reg.get_mut() = v` | `reg.read()` / `reg.write(v)`      |
-| `reg.get_mut()` dereference         | `reg.modify(\|v\| …)`              |
-| `black_box`-based access            | `read_volatile` / `write_volatile` |
-| No bitfield support                 | `register_map!` with bitfields     |
-| No bus-width control                | `register_map!(… (u32) { … })`     |
-| No doc comment support              | `/// …` on registers & bitfields   |
-| No typed bitfield support           | `as bool` / `as u8` / `as enum`    |
-| No register-array support           | `rw fifo: [u32; 8]` (indexed API)  |
-| No web UI                           | `web` feature with `axum` server   |
+| 0.4                                              | 0.5                                                                                       |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `Error::CantOpenFile` / `Error::CantMmapFile`    | `Error::Open` / `Error::Mmap`                                                             |
+| Bitfield setters on `wo` registers read-modify-write (reading a write-only register!) | They write the field with all other bits zero                |
+| `DevMem::read`/`write`/`modify` accepted misaligned offsets (UB)                       | Misaligned offsets return `None`; `read_unchecked`/`write_unchecked` added |
+| Web API accepted any offset and wrote to `ro` registers                               | Offsets are validated against the declared map               |
+| Register types were unchecked                    | Must be `u8`/`u16`/`u32`/`u64`/`usize`; bit ranges, enum values, and name collisions are compile errors |
+| Missing commas between registers were silently accepted                               | Commas are required (trailing comma still optional)          |
+| `/api/{slug}/read` returned `{ value }`          | Returns `{ value, hex }`; writes also accept string values (full 64-bit range)            |
 
 ## Examples
 
@@ -603,7 +622,7 @@ Each one enables the `emulator` feature, so they work without `/dev/mem`.
 Run any of them with:
 
 ```sh
-cargo run --example <name>
+cargo run --example <name>              # web_* examples: add --features web
 ```
 
 ## License

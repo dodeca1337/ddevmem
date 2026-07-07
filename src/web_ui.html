@@ -606,19 +606,41 @@ function hexStr(val, bits) {
   return '0x' + BigInt(val).toString(16).toUpperCase().padStart(digits, '0');
 }
 
+/*
+ * All register values are BigInt end-to-end: JSON numbers lose precision
+ * above 2^53, which 64-bit registers exceed. The server returns a `hex`
+ * string alongside `value` and accepts strings ("0x1F") on write.
+ */
+function respValue(resp) {
+  return BigInt(resp.hex !== undefined ? resp.hex : resp.value);
+}
+
+function wireValue(v) {
+  return '0x' + BigInt(v).toString(16);
+}
+
+function parseUserValue(text) {
+  const s = text.trim();
+  if (!s) throw new Error('invalid number');
+  try {
+    return BigInt(s); // accepts decimal and 0x-prefixed hex
+  } catch (_) {
+    throw new Error('invalid number');
+  }
+}
+
 function extractBits(val, lo, hi) {
   const v = BigInt(val);
   const width = BigInt(hi - lo + 1);
   const mask = (1n << width) - 1n;
-  return Number((v >> BigInt(lo)) & mask);
+  return (v >> BigInt(lo)) & mask;
 }
 
 function setBits(oldVal, lo, hi, newFieldVal) {
-  let v = BigInt(oldVal);
+  const v = BigInt(oldVal);
   const width = BigInt(hi - lo + 1);
   const mask = (1n << width) - 1n;
-  v = (v & ~(mask << BigInt(lo))) | ((BigInt(newFieldVal) & mask) << BigInt(lo));
-  return Number(v & ((1n << 64n) - 1n));
+  return (v & ~(mask << BigInt(lo))) | ((BigInt(newFieldVal) & mask) << BigInt(lo));
 }
 
 function escHtml(s) {
@@ -639,44 +661,21 @@ function setBrand(title) {
 
 async function init() {
   try {
-    // Try multi-map mode first (/api/maps), fall back to single-map (/api/info)
-    let multiMode = false;
-    let customTitle = null;
-    try {
-      const resp = await api('/maps');
-      // The endpoint returns either the legacy bare array `[{slug,name},…]`
-      // or the new wrapper `{ title, maps: […] }`. Accept both.
-      const maps = Array.isArray(resp) ? resp : resp.maps;
-      if (!Array.isArray(resp) && typeof resp.title === 'string') {
-        customTitle = resp.title;
-      }
-      const infos = await Promise.all(maps.map(m => api('/' + m.slug + '/info')));
-      allMaps = maps.map((m, i) => ({
-        slug: m.slug, name: m.name, info: infos[i],
-        apiPrefix: '/' + m.slug
-      }));
-      multiMode = true;
-    } catch (_) {
-      const info = await api('/info');
-      allMaps = [{ slug: '_', name: info.name, info: info, apiPrefix: '' }];
-    }
+    const resp = await api('/maps');
+    const customTitle = typeof resp.title === 'string' ? resp.title : null;
+    const infos = await Promise.all(resp.maps.map(m => api('/' + m.slug + '/info')));
+    allMaps = resp.maps.map((m, i) => ({
+      slug: m.slug, name: m.name, info: infos[i],
+      apiPrefix: '/' + m.slug
+    }));
 
-    if (multiMode) {
-      const heading = customTitle || 'ddevmem — Register Maps';
-      $('title').textContent = heading;
-      document.title = heading;
-      if (customTitle) setBrand(customTitle);
-      $('meta').textContent = allMaps.length + ' register map(s)';
-    } else {
-      const info = allMaps[0].info;
-      $('title').textContent = info.name + ' — Register Map';
-      document.title = info.name + ' — Register Map';
-      $('meta').textContent = 'Base: ' + hexStr(info.base_address, 32)
-        + '  |  Bus width: ' + (info.bus_width * 8) + ' bit'
-        + '  |  ' + info.registers.length + ' register(s)';
-    }
+    const heading = customTitle || 'ddevmem — Register Maps';
+    $('title').textContent = heading;
+    document.title = heading;
+    if (customTitle) setBrand(customTitle);
+    $('meta').textContent = allMaps.length + ' register map(s)';
 
-    renderAll(multiMode);
+    renderAll();
     refreshAll();
   } catch (e) {
     $('maps').innerHTML = '<div class="error">Failed to load: ' + escHtml(e.message) + '</div>';
@@ -695,7 +694,7 @@ document.addEventListener('pointerdown', (e) => {
   if (btn && !btn.disabled) btn.focus();
 });
 
-function renderAll(showHeaders) {
+function renderAll() {
   const container = $('maps');
   container.innerHTML = '';
   for (const map of allMaps) {
@@ -704,13 +703,11 @@ function renderAll(showHeaders) {
     section.id = 'map-' + map.slug;
 
     let html = '';
-    if (showHeaders) {
-      html += '<h2>' + escHtml(info.name)
-            + '<button class="btn-ghost map-dump" onclick="dumpMap(\'' + map.slug + '\')">Dump</button>'
-            + '</h2>';
-      html += '<div class="meta">' + escHtml(map.slug) + ' · Base: ' + hexStr(info.base_address, 32)
-            + ' · Bus: ' + (info.bus_width * 8) + '-bit · ' + info.registers.length + ' register(s)</div>';
-    }
+    html += '<h2>' + escHtml(info.name)
+          + '<button class="btn-ghost map-dump" onclick="dumpMap(\'' + map.slug + '\')">Dump</button>'
+          + '</h2>';
+    html += '<div class="meta">' + escHtml(map.slug) + ' · Base: ' + hexStr(info.base_address, 32)
+          + ' · Bus: ' + (info.bus_width * 8) + '-bit · ' + info.registers.length + ' register(s)</div>';
 
     for (const reg of info.registers) {
       const uid = map.slug + '-' + reg.offset;
@@ -782,9 +779,7 @@ function renderAll(showHeaders) {
   let navHtml = '';
   for (const map of allMaps) {
     const info = map.info;
-    if (allMaps.length > 1 || map.slug !== '_') {
-      navHtml += '<div class="nav-heading">' + escHtml(info.name) + '</div>';
-    }
+    navHtml += '<div class="nav-heading">' + escHtml(info.name) + '</div>';
     navHtml += '<div class="nav-base" title="Base address">Base ' + hexStr(info.base_address, 32) + '</div>';
     for (const reg of info.registers) {
       const uid = map.slug + '-' + reg.offset;
@@ -896,9 +891,10 @@ async function readReg(slug, offset, width) {
   const st = $('st-' + uid);
   try {
     const resp = await api(map.apiPrefix + '/read', { offset });
+    const value = respValue(resp);
     const el = $('val-' + uid);
-    if (el) el.textContent = hexStr(resp.value, width);
-    updateBitfields(slug, offset, resp.value);
+    if (el) el.textContent = hexStr(value, width);
+    updateBitfields(slug, offset, value);
     if (st) st.textContent = '';
   } catch (e) {
     if (st) st.textContent = e.message;
@@ -915,12 +911,12 @@ function updateBitfields(slug, offset, value) {
     if (!el) continue;
     const rawVal = extractBits(value, bf.lo, bf.hi);
     if (bf.variants && bf.variants.length > 0) {
-      const v = bf.variants.find(v => v.value === rawVal);
+      const v = bf.variants.find(v => BigInt(v.value) === rawVal);
       el.textContent = v ? v.name + ' (' + rawVal + ')' : String(rawVal);
       const sel = $('bfi-' + slug + '-' + offset + '-' + bf.name);
       if (sel && sel.tagName === 'SELECT') sel.value = String(rawVal);
     } else {
-      el.textContent = rawVal;
+      el.textContent = String(rawVal);
     }
   }
 }
@@ -933,9 +929,8 @@ async function writeReg(slug, offset, width) {
   const st = $('st-' + uid);
   if (!inp) return;
   try {
-    const value = Number(inp.value.trim());
-    if (isNaN(value)) throw new Error('invalid number');
-    await api(map.apiPrefix + '/write', { offset, value });
+    const value = parseUserValue(inp.value);
+    await api(map.apiPrefix + '/write', { offset, value: wireValue(value) });
     if (st) st.textContent = 'written';
     await readReg(slug, offset, width);
   } catch (e) {
@@ -951,11 +946,10 @@ async function writeBitfield(slug, offset, lo, hi, name, width) {
   const st = $('st-' + uid);
   if (!inp) return;
   try {
-    const fieldVal = Number(inp.value.trim());
-    if (isNaN(fieldVal)) throw new Error('invalid number');
+    const fieldVal = parseUserValue(inp.value);
     const resp = await api(map.apiPrefix + '/read', { offset });
-    const newVal = setBits(resp.value, lo, hi, fieldVal);
-    await api(map.apiPrefix + '/write', { offset, value: newVal });
+    const newVal = setBits(respValue(resp), lo, hi, fieldVal);
+    await api(map.apiPrefix + '/write', { offset, value: wireValue(newVal) });
     if (st) st.textContent = name + ' updated';
     await readReg(slug, offset, width);
   } catch (e) {
@@ -984,27 +978,22 @@ async function dumpMaps(maps, statusId) {
   if (gs) gs.textContent = 'Dumping...';
   try {
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    const multi = maps.length > 1 || maps[0].slug !== '_';
+    const multi = maps.length > 1;
     let lines = [];
-    lines.push('# ddevmem register dump');
+    lines.push(multi ? '# ddevmem register dump' : '# ' + maps[0].info.name + ' register dump');
     lines.push('# Date: ' + new Date().toISOString());
     if (multi) lines.push('# Maps: ' + maps.length);
     lines.push('');
-    // For a single map the file is named after the map itself; for a
-    // multi-map dump (e.g. "Dump all") we use a generic prefix instead of
-    // accidentally taking the first map's name.
-    let fileName = multi ? 'ddevmem-all' : null;
+    // A single-map dump is named after the map (plus base address, so dumps
+    // from two instances of the same peripheral don't collide); a multi-map
+    // dump gets a generic prefix.
+    const fileName = multi
+      ? 'ddevmem-all'
+      : maps[0].info.name + '@' + hexStr(maps[0].info.base_address, 32);
     for (const map of maps) {
       const info = map.info;
       if (multi) {
         lines.push('## ' + info.name + ' (' + map.slug + ')');
-      } else {
-        lines[0] = '# ' + info.name + ' register dump';
-      }
-      if (!fileName) {
-        // Single-map dump: include the base address so dumps from
-        // different instances of the same peripheral don't collide.
-        fileName = info.name + '@' + hexStr(info.base_address, 32);
       }
       lines.push('# Base address: ' + hexStr(info.base_address, 32));
       lines.push('# Bus width: ' + (info.bus_width * 8) + ' bit');
@@ -1016,14 +1005,14 @@ async function dumpMaps(maps, statusId) {
         }
         try {
           const resp = await api(map.apiPrefix + '/read', { offset: reg.offset });
-          const val = resp.value;
+          const val = respValue(resp);
           lines.push(hexStr(reg.offset, 16) + '  ' + reg.name.padEnd(20) + '  ' + hexStr(val, reg.width) + '  (' + reg.access + ')');
           for (const bf of reg.bitfields) {
             const raw = extractBits(val, bf.lo, bf.hi);
             const bits = bf.lo === bf.hi ? 'bit ' + bf.lo : 'bits ' + bf.hi + ':' + bf.lo;
             let valStr = String(raw);
             if (bf.variants && bf.variants.length > 0) {
-              const v = bf.variants.find(v => v.value === raw);
+              const v = bf.variants.find(v => BigInt(v.value) === raw);
               if (v) valStr = v.name + ' (' + raw + ')';
             }
             lines.push('    ' + bf.name.padEnd(20) + '  [' + bits + ']  = ' + valStr);

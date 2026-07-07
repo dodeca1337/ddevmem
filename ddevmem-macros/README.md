@@ -9,7 +9,7 @@ instead:
 
 ```toml
 [dependencies]
-ddevmem = "0.4"
+ddevmem = "0.5"
 ```
 
 See the [`ddevmem` crate documentation][docs] for usage.

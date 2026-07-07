@@ -3,7 +3,7 @@
 //! (bool, u8, enum).
 //!
 //! Run with:
-//!   cargo run --example web_same_map --no-default-features --features "emulator,web"
+//!   cargo run --example web_same_map --features web
 //!
 //! Then open http://localhost:3000/hw/ and verify:
 //!   - Two `TimerRegs` sections appear with different base addresses.

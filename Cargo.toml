@@ -2,7 +2,7 @@
 members = [".", "ddevmem-macros"]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 authors = ["Dodeca Shaven <dodeca@tutamail.com>"]
 repository = "https://github.com/dodeca1337/ddevmem"
@@ -25,7 +25,7 @@ license.workspace = true
 memmap2 = { version = "0.9.10", optional = true }
 page_size = "0.6.0"
 bytemuck = "1.25.0"
-ddevmem-macros = { path = "ddevmem-macros", version = "=0.4.1", optional = true }
+ddevmem-macros = { path = "ddevmem-macros", version = "=0.5.0", optional = true }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["sync"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
@@ -36,11 +36,16 @@ subtle = { version = "2.6.1", optional = true }
 # Self-dev-dependency: when Cargo builds examples / tests / benches it
 # unifies features from `[dependencies]` and `[dev-dependencies]`. Pulling
 # the crate in here with `emulator` activates that feature for every
-# example build without changing `[features].default`. Downstream users
-# are unaffected (dev-deps don't propagate). `src/devmem.rs` lets
+# example and test build without changing `[features].default`. Downstream
+# users are unaffected (dev-deps don't propagate). `src/devmem.rs` lets
 # `emulator` win when both backends are enabled simultaneously.
 [dev-dependencies]
 ddevmem = { path = ".", features = ["emulator"] }
+page_size = "0.6.0"
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 
 [build-dependencies]
 # Used by build.rs to minify src/web_ui.html into OUT_DIR. Always compiled

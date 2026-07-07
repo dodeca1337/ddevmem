@@ -1,7 +1,7 @@
 //! Example: register map with bitfields and doc comments (emulator backend).
 //!
 //! Run with:
-//!   cargo run --example bitfield --no-default-features --features "emulator,register-map"
+//!   cargo run --example bitfield
 
 use std::sync::Arc;
 

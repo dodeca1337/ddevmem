@@ -1,7 +1,7 @@
 //! Example: typed bitfields — `as bool`, `as u8`, and `as enum`.
 //!
 //! Run with:
-//!   cargo run --example typed_bitfield --no-default-features --features "emulator,register-map"
+//!   cargo run --example typed_bitfield
 
 use std::sync::Arc;
 

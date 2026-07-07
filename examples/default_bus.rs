@@ -1,7 +1,7 @@
 //! Example: basic register map with explicit 32-bit bus width.
 //!
 //! Run with:
-//!   cargo run --example default_bus --no-default-features --features "emulator,register-map"
+//!   cargo run --example default_bus
 
 use std::sync::Arc;
 

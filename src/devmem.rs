@@ -1,30 +1,23 @@
 use bytemuck::{AnyBitPattern, NoUninit};
-use std::{cell::UnsafeCell, fmt, io::Error as IOError};
+use std::{fmt, io, mem, ptr};
 
 #[cfg(all(feature = "device", not(feature = "emulator")))]
-use memmap2::{MmapMut, MmapOptions};
-
-#[cfg(all(feature = "device", not(feature = "emulator")))]
-use std::fs::OpenOptions;
+use memmap2::{MmapOptions, MmapRaw};
 
 /// Error returned when creating a [`DevMem`] instance.
-///
-/// Wraps the underlying I/O error from opening or memory-mapping `/dev/mem`.
-/// Implements [`std::fmt::Display`], [`std::error::Error`], and
-/// [`From<Error>`](std::convert::From) for [`std::io::Error`].
 #[derive(Debug)]
 pub enum Error {
-    /// The `/dev/mem` file could not be opened.
-    CantOpenFile(IOError),
-    /// The memory-mapping (`mmap`) call failed.
-    CantMmapFile(IOError),
+    /// `/dev/mem` could not be opened.
+    Open(io::Error),
+    /// The `mmap` call failed (e.g. the address is not page-aligned).
+    Mmap(io::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::CantOpenFile(err) => write!(f, "failed to open /dev/mem: {err}"),
-            Error::CantMmapFile(err) => write!(f, "failed to mmap /dev/mem: {err}"),
+            Error::Open(err) => write!(f, "failed to open /dev/mem: {err}"),
+            Error::Mmap(err) => write!(f, "failed to mmap /dev/mem: {err}"),
         }
     }
 }
@@ -32,18 +25,57 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::CantOpenFile(err) | Error::CantMmapFile(err) => Some(err),
+            Error::Open(err) | Error::Mmap(err) => Some(err),
         }
     }
 }
 
-impl From<Error> for IOError {
-    fn from(err: Error) -> IOError {
+impl From<Error> for io::Error {
+    fn from(err: Error) -> io::Error {
         match err {
-            Error::CantOpenFile(e) | Error::CantMmapFile(e) => e,
+            Error::Open(e) | Error::Mmap(e) => e,
         }
     }
 }
+
+/// Page-aligned, zero-initialized heap buffer standing in for a real
+/// `/dev/mem` mapping. Page alignment mirrors the kernel mapping, so any
+/// access that would be aligned on hardware is also aligned here.
+#[cfg(feature = "emulator")]
+struct EmulatorBuf {
+    ptr: ptr::NonNull<u8>,
+    layout: std::alloc::Layout,
+}
+
+#[cfg(feature = "emulator")]
+impl EmulatorBuf {
+    fn zeroed(size: usize) -> Self {
+        let layout = std::alloc::Layout::from_size_align(size.max(1), page_size::get())
+            .expect("emulator buffer layout");
+        // SAFETY: `layout` has non-zero size.
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        let Some(ptr) = ptr::NonNull::new(ptr) else {
+            std::alloc::handle_alloc_error(layout);
+        };
+        Self { ptr, layout }
+    }
+}
+
+#[cfg(feature = "emulator")]
+impl Drop for EmulatorBuf {
+    fn drop(&mut self) {
+        // SAFETY: allocated in `zeroed` with the same layout.
+        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), self.layout) }
+    }
+}
+
+// SAFETY: `EmulatorBuf` owns its allocation and never hands out references
+// to it; all access goes through raw pointers, with synchronization
+// delegated to the caller exactly like the real MMIO backend.
+#[cfg(feature = "emulator")]
+unsafe impl Send for EmulatorBuf {}
+#[cfg(feature = "emulator")]
+unsafe impl Sync for EmulatorBuf {}
 
 /// A memory-mapped view of a physical address range obtained from `/dev/mem`.
 ///
@@ -53,84 +85,76 @@ impl From<Error> for IOError {
 ///
 /// # Backends
 ///
-/// * **`device`** (default) — opens `/dev/mem` with `memmap2`.
-/// * **`emulator`** — uses a heap-allocated `Vec<u8>` for testing.
+/// * **`device`** (default) — maps `/dev/mem` via `memmap2`.
+/// * **`emulator`** — a page-aligned, zero-initialized heap buffer for
+///   testing without hardware.
 ///
-/// Enable exactly one of the two.
+/// When both features are enabled the `emulator` backend takes precedence,
+/// which lets a crate's dev-dependencies opt into emulation for tests and
+/// examples without disabling default features.
 ///
 /// # Thread safety
 ///
-/// `DevMem` is `Send + Sync` but provides no internal synchronization.
-/// Wrap it in an [`Arc`](std::sync::Arc) and protect all register accesses
-/// with a lock (e.g. `tokio::sync::Mutex`) when sharing across threads.
+/// `DevMem` is `Send + Sync` but provides no internal synchronization —
+/// hardware registers cannot be protected by the Rust type system anyway.
+/// Wrap it in an [`Arc`](std::sync::Arc) and guard register access with a
+/// lock (e.g. `tokio::sync::Mutex`) when sharing across threads.
 pub struct DevMem {
-    /// `UnsafeCell` is required for interior mutability: volatile writes go
-    /// through `&self` (necessary when `DevMem` is shared via `Arc`), and the
-    /// Rust memory model requires `UnsafeCell` to permit mutation through a
-    /// shared reference without invoking undefined behaviour.
-    #[cfg(feature = "emulator")]
-    mmap: UnsafeCell<Vec<u8>>,
     #[cfg(all(feature = "device", not(feature = "emulator")))]
-    mmap: UnsafeCell<MmapMut>,
+    mmap: MmapRaw,
+    #[cfg(feature = "emulator")]
+    buf: EmulatorBuf,
     address: usize,
+    len: usize,
 }
-
-// SAFETY: Volatile MMIO accesses are inherently thread-unsafe at the hardware
-// level. We declare Send + Sync here and delegate synchronization responsibility
-// to the caller (Arc<Mutex<RegisterMap>> is the recommended pattern). This
-// mirrors how AtomicXxx types work: they use UnsafeCell and assert Sync.
-unsafe impl Send for DevMem {}
-unsafe impl Sync for DevMem {}
 
 impl DevMem {
     /// Opens and memory-maps a physical address range.
     ///
-    /// When the `device` feature is active the region is backed by
-    /// `/dev/mem`; with `emulator` it is a zero-initialized heap buffer.
+    /// With the `device` feature the region is backed by `/dev/mem`; with
+    /// `emulator` it is a zero-initialized heap buffer. Both are page-aligned.
     ///
     /// # Arguments
     ///
-    /// * `address` — physical base address (must be page-aligned for
-    ///   `/dev/mem`).
-    /// * `size` — length in bytes.  `None` defaults to the system page
-    ///   size.
+    /// * `address` — physical base address. `/dev/mem` requires it to be
+    ///   page-aligned; the emulator accepts anything.
+    /// * `size` — length in bytes. `None` defaults to the system page size.
     ///
     /// # Safety
     ///
     /// The caller is responsible for ensuring that:
-    /// - The address range is valid and not in use by the kernel.
+    /// - The address range refers to a device that tolerates the accesses
+    ///   this mapping will perform.
     /// - No other mapping aliases the same region with conflicting
-    ///   mutability.
+    ///   expectations.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CantOpenFile`] if `/dev/mem` cannot be opened, or
-    /// [`Error::CantMmapFile`] if the `mmap` call fails.
+    /// Returns [`Error::Open`] if `/dev/mem` cannot be opened, or
+    /// [`Error::Mmap`] if the `mmap` call fails.
     pub unsafe fn new(address: usize, size: Option<usize>) -> Result<Self, Error> {
-        let page_size = page_size::get();
-        let size = size.unwrap_or(page_size);
+        let len = size.unwrap_or_else(page_size::get);
 
         #[cfg(all(feature = "device", not(feature = "emulator")))]
         {
-            let file = OpenOptions::new()
+            let file = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
-                .create(false)
                 .open("/dev/mem")
-                .map_err(Error::CantOpenFile)?;
+                .map_err(Error::Open)?;
 
             let mmap = MmapOptions::new()
-                .len(size)
+                .len(len)
                 .offset(address as u64)
-                .map_mut(&file)
-                .map_err(Error::CantMmapFile)?;
+                .map_raw(&file)
+                .map_err(Error::Mmap)?;
 
-            Ok(Self { mmap: UnsafeCell::new(mmap), address })
+            Ok(Self { mmap, address, len })
         }
 
         #[cfg(feature = "emulator")]
         {
-            Ok(Self { mmap: UnsafeCell::new(vec![0; size]), address })
+            Ok(Self { buf: EmulatorBuf::zeroed(len), address, len })
         }
     }
 
@@ -143,120 +167,157 @@ impl DevMem {
     /// Length of the mapped region in bytes.
     #[inline(always)]
     pub fn len(&self) -> usize {
-        // SAFETY: no aliasing &mut to the inner buffer exists at this call site.
-        unsafe { (&*self.mmap.get()).len() }
+        self.len
     }
 
     /// Returns `true` when the mapped region has zero length.
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        // SAFETY: same as len().
-        unsafe { (&*self.mmap.get()).is_empty() }
+        self.len == 0
     }
 
     /// Raw pointer to the first byte of the mapped region.
     ///
-    /// The returned pointer remains valid for the lifetime of `self`.
-    /// Use [`std::ptr::read_volatile`] / [`std::ptr::write_volatile`] to
-    /// access MMIO registers through this pointer. The caller must ensure no
-    /// conflicting accesses alias the same memory concurrently.
+    /// The pointer remains valid for the lifetime of `self`. Use
+    /// [`std::ptr::read_volatile`] / [`std::ptr::write_volatile`] for MMIO
+    /// access through it; the caller is responsible for synchronization.
     #[inline(always)]
     pub fn as_ptr(&self) -> *mut u8 {
-        // SAFETY: UnsafeCell grants permission to derive a *mut from &self.
-        // Callers are responsible for synchronization.
-        unsafe { (*self.mmap.get()).as_ptr() as *mut u8 }
+        #[cfg(all(feature = "device", not(feature = "emulator")))]
+        {
+            self.mmap.as_mut_ptr()
+        }
+
+        #[cfg(feature = "emulator")]
+        {
+            self.buf.ptr.as_ptr()
+        }
     }
 
-    /// Performs a volatile read of type `T` at `offset` bytes from the base.
+    /// Returns `true` when `count` values of `T` starting at `offset` lie
+    /// within the mapping and the resulting pointer is aligned for `T`.
+    #[inline(always)]
+    fn access_ok<T>(&self, offset: usize, count: usize) -> bool {
+        let Some(size) = mem::size_of::<T>().checked_mul(count) else {
+            return false;
+        };
+        let Some(end) = offset.checked_add(size) else {
+            return false;
+        };
+        end <= self.len && (self.as_ptr() as usize + offset).is_multiple_of(mem::align_of::<T>())
+    }
+
+    /// Volatile read of type `T` at `offset` bytes from the base.
     ///
-    /// `T` must implement [`AnyBitPattern`] so that any bit pattern is a valid
-    /// value.
+    /// `T` must implement [`AnyBitPattern`] so that any bit pattern read from
+    /// the device is a valid value.
     ///
-    /// Returns `None` if `offset + size_of::<T>()` exceeds the mapped length.
+    /// Returns `None` if the access would fall outside the mapped region or
+    /// `offset` is not aligned for `T`.
     #[inline(always)]
     pub fn read<T: AnyBitPattern>(&self, offset: usize) -> Option<T> {
-        if offset + std::mem::size_of::<T>() > self.len() {
+        if !self.access_ok::<T>(offset, 1) {
             return None;
         }
-        Some(unsafe { std::ptr::read_volatile(self.as_ptr().add(offset) as *const T) })
+        // SAFETY: bounds and alignment verified by `access_ok`.
+        Some(unsafe { self.read_unchecked(offset) })
     }
 
-    /// Performs a volatile write of `value` at `offset` bytes from the base.
+    /// Volatile write of `value` at `offset` bytes from the base.
     ///
     /// `T` must implement [`NoUninit`] to guarantee no padding bytes are
     /// written.
     ///
-    /// Returns `None` if `offset + size_of::<T>()` exceeds the mapped length.
+    /// Returns `None` if the access would fall outside the mapped region or
+    /// `offset` is not aligned for `T`.
     #[inline(always)]
     pub fn write<T: NoUninit>(&self, offset: usize, value: T) -> Option<()> {
-        if offset + std::mem::size_of::<T>() > self.len() {
+        if !self.access_ok::<T>(offset, 1) {
             return None;
         }
-        unsafe { std::ptr::write_volatile(self.as_ptr().add(offset) as *mut T, value) };
+        // SAFETY: bounds and alignment verified by `access_ok`.
+        unsafe { self.write_unchecked(offset, value) };
         Some(())
     }
 
     /// Volatile read-modify-write of type `T` at `offset`.
     ///
     /// Reads the current value, passes it to `f`, and writes the result back.
-    /// The entire operation is **not** atomic.
+    /// The whole operation is **not** atomic.
     ///
-    /// Returns `None` if `offset + size_of::<T>()` exceeds the mapped length.
+    /// Returns `None` if the access would fall outside the mapped region or
+    /// `offset` is not aligned for `T`.
     #[inline(always)]
     pub fn modify<T: AnyBitPattern + NoUninit>(
         &self,
         offset: usize,
         f: impl FnOnce(T) -> T,
     ) -> Option<()> {
-        if offset + std::mem::size_of::<T>() > self.len() {
+        if !self.access_ok::<T>(offset, 1) {
             return None;
         }
+        // SAFETY: bounds and alignment verified by `access_ok`.
         unsafe {
-            let ptr = self.as_ptr().add(offset);
-            let val = std::ptr::read_volatile(ptr as *const T);
-            std::ptr::write_volatile(ptr as *mut T, f(val));
+            let value = self.read_unchecked(offset);
+            self.write_unchecked(offset, f(value));
         }
         Some(())
     }
 
-    /// Volatile read of `buf.len()` consecutive elements of type `T` starting
-    /// at `offset`.
+    /// Volatile read of type `T` at `offset`, without bounds or alignment
+    /// checks.
     ///
-    /// Each element is read with a separate [`std::ptr::read_volatile`].
+    /// # Safety
     ///
-    /// Returns `None` if `offset + size_of::<T>() * buf.len()` exceeds the
-    /// mapped length.
+    /// `offset + size_of::<T>()` must not exceed [`len`](Self::len), and
+    /// `offset` must be aligned for `T` (the mapping itself is page-aligned).
+    #[inline(always)]
+    pub unsafe fn read_unchecked<T: AnyBitPattern>(&self, offset: usize) -> T {
+        ptr::read_volatile(self.as_ptr().add(offset).cast::<T>())
+    }
+
+    /// Volatile write of `value` at `offset`, without bounds or alignment
+    /// checks.
+    ///
+    /// # Safety
+    ///
+    /// `offset + size_of::<T>()` must not exceed [`len`](Self::len), and
+    /// `offset` must be aligned for `T` (the mapping itself is page-aligned).
+    #[inline(always)]
+    pub unsafe fn write_unchecked<T: NoUninit>(&self, offset: usize, value: T) {
+        ptr::write_volatile(self.as_ptr().add(offset).cast::<T>(), value);
+    }
+
+    /// Volatile read of `buf.len()` consecutive values of `T` starting at
+    /// `offset`, one [`read_volatile`](std::ptr::read_volatile) per element.
+    ///
+    /// Returns `None` if the access would fall outside the mapped region or
+    /// `offset` is not aligned for `T`.
     #[inline(always)]
     pub fn read_slice<T: AnyBitPattern>(&self, offset: usize, buf: &mut [T]) -> Option<()> {
-        if offset + std::mem::size_of_val(buf) > self.len() {
+        if !self.access_ok::<T>(offset, buf.len()) {
             return None;
         }
         for (i, slot) in buf.iter_mut().enumerate() {
-            unsafe {
-                *slot = std::ptr::read_volatile(self.as_ptr().add(offset).cast::<T>().add(i));
-            }
+            // SAFETY: `access_ok` covered all `buf.len()` elements.
+            *slot = unsafe { self.read_unchecked(offset + i * mem::size_of::<T>()) };
         }
         Some(())
     }
 
-    /// Volatile write of `buf.len()` consecutive elements of type `T` starting
-    /// at `offset`.
+    /// Volatile write of `buf.len()` consecutive values of `T` starting at
+    /// `offset`, one [`write_volatile`](std::ptr::write_volatile) per element.
     ///
-    /// Each element is written with a separate [`std::ptr::write_volatile`].
-    /// `T: Copy` is required so that each element can be passed by value to
-    /// `write_volatile` without affecting the original slice.
-    ///
-    /// Returns `None` if `offset + size_of::<T>() * buf.len()` exceeds the
-    /// mapped length.
+    /// Returns `None` if the access would fall outside the mapped region or
+    /// `offset` is not aligned for `T`.
     #[inline(always)]
     pub fn write_slice<T: NoUninit + Copy>(&self, offset: usize, buf: &[T]) -> Option<()> {
-        if offset + std::mem::size_of_val(buf) > self.len() {
+        if !self.access_ok::<T>(offset, buf.len()) {
             return None;
         }
-        for (i, val) in buf.iter().enumerate() {
-            unsafe {
-                std::ptr::write_volatile(self.as_ptr().add(offset).cast::<T>().add(i), *val);
-            }
+        for (i, value) in buf.iter().enumerate() {
+            // SAFETY: `access_ok` covered all `buf.len()` elements.
+            unsafe { self.write_unchecked(offset + i * mem::size_of::<T>(), *value) };
         }
         Some(())
     }
@@ -268,7 +329,7 @@ impl fmt::Debug for DevMem {
             f,
             "DevMem({:#X}..{:#X})",
             self.address,
-            self.address + self.len()
+            self.address + self.len
         )
     }
 }
