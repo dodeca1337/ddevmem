@@ -191,6 +191,8 @@
     margin-bottom: 2px;
     transition: background-color 70ms, border-color 70ms;
   }
+  /* Anchor targets must clear the fixed UI-Shell header when jumped to. */
+  .reg-card, .map-section { scroll-margin-top: calc(var(--header-h) + var(--spacing-03)); }
   .reg-header { display: flex; align-items: center; gap: var(--spacing-04); flex-wrap: wrap; margin-bottom: var(--spacing-02); }
   .reg-name { font-weight: 600; font-size: 1rem; color: var(--text-primary); }
   .reg-offset { color: var(--text-helper); font-size: .75rem; margin-left: auto; }
@@ -513,17 +515,57 @@
     border-left-color: var(--button-primary);
     font-weight: 600;
   }
-  .sidebar .nav-heading {
-    color: var(--text-helper);
+  /* Accordion groups — one per register map. The header row is a link to
+     the map's section plus a chevron button that folds the register list.
+     Groups start collapsed; the `.open` class shows the items. */
+  .nav-group-header { display: flex; align-items: stretch; }
+  .nav-group-link {
+    flex: 1 1 auto; min-width: 0;
+    display: flex; align-items: center; gap: var(--spacing-03);
+    padding: var(--spacing-02) 0 var(--spacing-02) var(--spacing-05);
+    min-height: 2rem;
+    color: var(--text-helper); text-decoration: none;
     font-weight: 600; font-size: .6875rem; letter-spacing: .04em; text-transform: uppercase;
-    padding: var(--spacing-04) var(--spacing-05) var(--spacing-01);
+    border-left: 3px solid transparent;
+    transition: background-color 70ms, color 70ms, border-color 70ms;
   }
-  .sidebar .nav-base {
+  .nav-group-link .nav-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nav-group-link .nav-addr {
+    margin-left: auto; flex-shrink: 0;
     font-family: 'IBM Plex Mono', ui-monospace, monospace;
     font-size: .6875rem; color: var(--text-helper);
-    padding: 0 var(--spacing-05) var(--spacing-02);
-    text-transform: none; letter-spacing: 0; font-weight: 400;
+    font-weight: 400; letter-spacing: 0; text-transform: none;
   }
+  .nav-group-link:hover { background: var(--layer-hover); color: var(--text-primary); }
+  .nav-group-link:hover .nav-addr { color: var(--text-secondary); }
+  .nav-group-link:focus { outline: 2px solid var(--focus); outline-offset: -2px; }
+  /* The chevron is a bare icon button: undo the global Carbon button skin. */
+  .nav-group-toggle {
+    flex: 0 0 auto;
+    width: 2rem; min-height: 2rem; max-width: none;
+    padding: 0; border: 0;
+    justify-content: center;
+    background: transparent;
+    color: var(--text-secondary);
+  }
+  .nav-group-toggle:hover  { background: var(--layer-hover);  color: var(--text-primary); border-color: transparent; }
+  .nav-group-toggle:active { background: var(--layer-active); color: var(--text-primary); border-color: transparent; }
+  .nav-group-toggle svg {
+    width: 16px; height: 16px; fill: currentColor;
+    transform: rotate(-90deg);              /* collapsed: chevron points right */
+    transition: transform 110ms cubic-bezier(.2,0,.38,.9);
+  }
+  .nav-group.open .nav-group-toggle svg { transform: rotate(0deg); }
+  .nav-group-items { display: none; }
+  .nav-group.open .nav-group-items { display: block; }
+  /* Indent register links one step under their group header. */
+  .nav-group-items a { padding-left: var(--spacing-06); }
+  /* Highlight the owning map while one of its registers is in view. */
+  .nav-group.active .nav-group-link {
+    color: var(--text-primary);
+    border-left-color: var(--button-primary);
+  }
+  .nav-group.active .nav-group-link .nav-addr { color: var(--text-secondary); }
   .sidebar::-webkit-scrollbar { width: 8px; }
   .sidebar::-webkit-scrollbar-thumb { background: var(--border-subtle); }
   .sidebar::-webkit-scrollbar-track { background: transparent; }
@@ -701,6 +743,7 @@ function renderAll() {
     const info = map.info;
     const section = ce('div');
     section.id = 'map-' + map.slug;
+    section.className = 'map-section';
 
     let html = '';
     html += '<h2>' + escHtml(info.name)
@@ -774,13 +817,27 @@ function renderAll() {
     container.appendChild(section);
   }
 
-  // Build sidebar navigation
+  // Build sidebar navigation: one collapsed accordion group per map.
+  // The group header links to the map's section; the chevron folds the
+  // register list.
+  const chevron = '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+                + '<path d="M8 11L3 6l.7-.7L8 9.6l4.3-4.3.7.7z"/></svg>';
   const sidebar = $('sidebar');
   let navHtml = '';
   for (const map of allMaps) {
     const info = map.info;
-    navHtml += '<div class="nav-heading">' + escHtml(info.name) + '</div>';
-    navHtml += '<div class="nav-base" title="Base address">Base ' + hexStr(info.base_address, 32) + '</div>';
+    navHtml += '<div class="nav-group" id="nav-' + map.slug + '">'
+             + '<div class="nav-group-header">'
+             + '<a class="nav-group-link" href="#map-' + map.slug + '"'
+             + ' title="' + escHtml(info.name) + ' · ' + hexStr(info.base_address, 32) + '">'
+             + '<span class="nav-name">' + escHtml(info.name) + '</span>'
+             + '<span class="nav-addr">' + hexStr(info.base_address, 32) + '</span>'
+             + '</a>'
+             + '<button class="nav-group-toggle" onclick="toggleNavGroup(\'' + map.slug + '\')"'
+             + ' aria-expanded="false" aria-label="Toggle register list" title="Toggle register list">'
+             + chevron + '</button>'
+             + '</div>'
+             + '<div class="nav-group-items">';
     for (const reg of info.registers) {
       const uid = map.slug + '-' + reg.offset;
       navHtml += '<a href="#reg-' + uid + '" title="' + escHtml(reg.name) + ' ' + hexStr(reg.offset, 16) + '">'
@@ -788,12 +845,43 @@ function renderAll() {
                + '<span class="nav-addr">' + hexStr(reg.offset, 16) + '</span>'
                + '</a>';
     }
+    navHtml += '</div></div>';
   }
   sidebar.innerHTML = navHtml;
   if (allMaps.reduce((s, m) => s + m.info.registers.length, 0) > 1) {
     sidebar.classList.add('visible');
   }
   setupScrollSpy();
+  revealHashTarget();
+}
+
+/* Expands (`true`), collapses (`false`), or toggles (undefined) the
+   sidebar group of the given map. */
+function toggleNavGroup(slug, forceOpen) {
+  const grp = $('nav-' + slug);
+  if (!grp) return;
+  const open = forceOpen === undefined ? !grp.classList.contains('open') : !!forceOpen;
+  grp.classList.toggle('open', open);
+  const btn = grp.querySelector('.nav-group-toggle');
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+}
+
+/* Deep links: content is rendered by JS, so the browser cannot honour the
+   URL hash on page load. Expand the owning group and jump manually. */
+function revealHashTarget() {
+  const id = location.hash.slice(1);
+  if (!id) return;
+  const target = document.getElementById(id);
+  if (!target) return;
+  if (id.startsWith('map-')) {
+    toggleNavGroup(id.slice(4), true);
+  } else if (id.startsWith('reg-')) {
+    const link = document.querySelector('.sidebar a[href="#' + id + '"]');
+    const grp = link && link.closest('.nav-group');
+    if (grp) toggleNavGroup(grp.id.slice(4), true);
+    setActiveLink(id);
+  }
+  target.scrollIntoView();
 }
 
 /*
@@ -844,29 +932,44 @@ function setupScrollSpy() {
   });
   cards.forEach(c => scrollSpyObserver.observe(c));
 
-  // Direct click on a sidebar link: highlight immediately, regardless of
+  // Direct click on a register link: highlight immediately, regardless of
   // whether the target card can actually reach the IntersectionObserver's
   // trigger band (last register cannot, since there's nothing below it).
-  document.querySelectorAll('.sidebar a').forEach(a => {
+  document.querySelectorAll('.sidebar a[href^="#reg-"]').forEach(a => {
     a.addEventListener('click', () => {
       const href = a.getAttribute('href') || '';
       if (href.startsWith('#')) setActiveLink(href.slice(1));
     });
   });
+
+  // Click on a group header: always expand (the chevron handles collapsing)
+  // and let the anchor navigate to the map's section.
+  document.querySelectorAll('.sidebar .nav-group-link').forEach(a => {
+    a.addEventListener('click', () => {
+      const grp = a.closest('.nav-group');
+      if (grp) toggleNavGroup(grp.id.slice(4), true);
+    });
+  });
 }
 
 function setActiveLink(cardId) {
-  const links = document.querySelectorAll('.sidebar a');
+  const links = document.querySelectorAll('.sidebar a[href^="#reg-"]');
   let activeLink = null;
   links.forEach(a => {
     const isActive = a.getAttribute('href') === '#' + cardId;
     a.classList.toggle('active', isActive);
     if (isActive) activeLink = a;
   });
+  // The register link may sit inside a collapsed group, so also mark the
+  // owning map's header — that is what stays visible either way.
+  document.querySelectorAll('.sidebar .nav-group').forEach(g => {
+    g.classList.toggle('active', !!activeLink && g.contains(activeLink));
+  });
   if (activeLink) {
-    // Scroll the sidebar so the active link stays visible.
+    // Scroll the sidebar so the active link stays visible (when its group
+    // is expanded; a collapsed link has no box to scroll to).
     const sb = $('sidebar');
-    if (sb) {
+    if (sb && activeLink.offsetParent !== null) {
       const lr = activeLink.getBoundingClientRect();
       const sr = sb.getBoundingClientRect();
       if (lr.top < sr.top || lr.bottom > sr.bottom) {

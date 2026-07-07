@@ -445,6 +445,8 @@ The web UI provides:
 
 - Live register values with auto-refresh
 - Per-register and per-bitfield read/write controls
+- Accordion sidebar: one collapsible group per map (collapsed by default);
+  the group header jumps to the map, registers link to individual cards
 - Documentation strings from `/// ...` comments
 - JSON API for integration with external tools
 - **Nestable router** — mount the web UI at any prefix on a larger server

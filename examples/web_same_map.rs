@@ -76,7 +76,7 @@ async fn main() {
     );
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Web UI at http://localhost:3000/hw/");
+    println!("Web UI at http://localhost:3000/hw");
     println!("  timer1 @ 0x4000_0000, timer2 @ 0x4000_1000");
     axum::serve(listener, app).await.unwrap();
 }
