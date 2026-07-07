@@ -327,7 +327,7 @@ async fn main() {
 
     let app = axum::Router::new().nest("/hw", regs_router);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8801").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8800").await.unwrap();
     println!("Showcase web UI at http://localhost:8800/hw");
     println!("  uart (u32 bus)  — typed bitfields, wo command + txd, ro rxd");
     println!("  adc  (u16 bus)  — enum trigger/resolution, ro data, wo start");
