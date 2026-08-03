@@ -2,34 +2,106 @@
 
 [![Latest Version]][crates.io] [![Documentation]][docs.rs] ![Downloads] ![License]
 
-Safe and ergonomic Rust library for accessing physical memory via `/dev/mem`,
-with volatile read/write semantics suitable for memory-mapped I/O (MMIO).
+**Talk to memory-mapped hardware from ordinary Linux userspace — no kernel
+module, no `volatile` boilerplate.**
 
-## Features
+You describe a peripheral's registers once, the way the datasheet lists them,
+and `ddevmem` turns that description into a typed API over `/dev/mem`: volatile
+reads and writes the compiler will not reorder, merge, or optimize away;
+bitfield accessors that touch only their own bits; and — if you want one — a
+browser UI to poke at the registers live while the board is running.
 
-| Feature        | Default | Description                                                                    |
-| -------------- | ------- | ------------------------------------------------------------------------------ |
-| `device`       | ✓       | Real `/dev/mem` backend via `memmap2`.                                         |
-| `emulator`     |         | Page-aligned heap buffer for testing without hardware.                         |
-| `register-map` | ✓       | Declarative `register_map!` macro with optional bitfields and typed accessors. |
-| `web`          |         | Web UI for viewing/editing registers via `axum` (optional auth).               |
+It is aimed at the everyday embedded-Linux situation: custom AXI-Lite IP in
+FPGA fabric, an SoC peripheral the vendor never wrote a driver for, a quick
+bring-up script that has to twiddle a few control bits.
 
-> **Note:** when both `device` and `emulator` are enabled, the `emulator`
-> backend takes precedence. This lets tests and examples opt into emulation
-> through dev-dependencies without touching default features.
+```rust
+use std::sync::Arc;
+use ddevmem::{register_map, DevMem};
+
+register_map! {
+    /// UART controller in the FPGA fabric.
+    pub unsafe map Uart (u32) {
+        0x00 =>
+            /// Control register.
+            rw cr: u32 {
+                /// Transmitter enable.
+                tx_en:  0 as bool,
+                /// Word length in bits.
+                len:    4..=7 as u8,
+                /// Parity mode.
+                parity: 8..=9 as enum Parity { None = 0, Even = 1, Odd = 2 },
+            },
+        0x04 =>
+            /// Status register.
+            ro sr: u32 {
+                /// Transmit FIFO empty.
+                tx_empty: 0 as bool
+            },
+        0x08 =>
+            /// Transmit data register.
+            wo txd: u32
+    }
+}
+
+let devmem = unsafe { DevMem::new(0x43C0_0000, None) }.unwrap();
+let mut uart = unsafe { Uart::new(Arc::new(devmem)) }.unwrap();
+
+uart.set_cr_tx_en(true);           // read-modify-write of bit 0 only
+uart.set_cr_len(8);                // bits 7:4, typed as u8
+uart.set_cr_parity(Parity::Even);  // bits 9:8, typed as an enum
+
+while !uart.sr_tx_empty() {}       // volatile poll — never hoisted out
+uart.set_txd(b'!' as u32);
+```
+
+## Highlights
+
+- **Register maps that read like a datasheet** — offsets, access kinds,
+  bitfields, and register arrays in a single declarative block.
+- **Typed bitfields** — `as bool`, `as u8`, or `as enum` with generated
+  `from_raw()` / `to_raw()` conversions, so mode values stop being magic
+  numbers.
+- **Correct by construction** — every access is a volatile load/store at the
+  declared bus width; bitfield writes preserve neighbouring bits; bounds are
+  checked once in the constructor instead of on every access.
+- **Mistakes caught at compile time** — misaligned offsets, bit ranges that
+  don't fit the register, enum values too large for their field, colliding
+  method names: each is an error pointing at the offending token, not a
+  surprise at 3 a.m. on the bench.
+- **Live web UI** (optional) — one self-contained page served by `axum`,
+  showing every register and bitfield with the documentation from your `///`
+  comments, plus a JSON API for scripting.
+- **Runs without hardware** — the `emulator` backend swaps `/dev/mem` for a
+  page-aligned heap buffer, so register logic can be unit-tested on a laptop.
+
+## Contents
+
+- [Installation](#installation)
+- [Requirements and caveats](#requirements-and-caveats)
+- [Raw memory access with `DevMem`](#raw-memory-access-with-devmem)
+- [Register maps](#register-maps)
+  - [Syntax at a glance](#syntax-at-a-glance)
+  - [The map header](#the-map-header)
+  - [Register entries](#register-entries)
+  - [Bitfields](#bitfields)
+  - [Typed bitfields](#typed-bitfields)
+  - [Register arrays](#register-arrays)
+  - [Documentation comments](#documentation-comments)
+  - [Generated API reference](#generated-api-reference)
+  - [Compile-time checks](#compile-time-checks)
+- [Web UI](#web-ui)
+- [Testing without hardware](#testing-without-hardware)
+- [Safety](#safety)
+- [Migration from 0.4](#migration-from-04)
+- [Examples](#examples)
+- [License](#license)
 
 ## Installation
 
 ```toml
 [dependencies]
 ddevmem = "0.5.0"
-```
-
-Or with specific features:
-
-```toml
-[dependencies]
-ddevmem = { version = "0.5.0", default-features = false, features = ["emulator", "register-map"] }
 ```
 
 With the web UI:
@@ -40,591 +112,632 @@ ddevmem = { version = "0.5.0", features = ["web"] }
 tokio = { version = "1", features = ["full"] }
 ```
 
-## Quick start
+For unit tests and desktop development, without touching real memory:
 
-### Raw `DevMem` access
-
-```rust,no_run
-use ddevmem::DevMem;
-
-let devmem = unsafe { DevMem::new(0x4000_0000, Some(0x1000)).unwrap() };
-
-// Volatile read
-let value: u32 = devmem.read(0x00).unwrap();
-
-// Volatile write
-devmem.write(0x04, 0xDEAD_BEEFu32).unwrap();
-
-// Read-modify-write
-devmem.modify::<u32>(0x00, |v| v | (1 << 8)).unwrap();
-
-// Bulk operations
-let mut buf = [0u32; 4];
-devmem.read_slice(0x10, &mut buf);
-devmem.write_slice(0x10, &[1, 2, 3, 4]);
+```toml
+[dependencies]
+ddevmem = { version = "0.5.0", default-features = false, features = ["emulator", "register-map"] }
 ```
 
-### Register map with bitfields
+### Feature flags
 
-```rust,no_run
-use std::sync::Arc;
-use ddevmem::{register_map, DevMem};
+| Feature        | Default | Description                                                                       |
+| -------------- | ------- | --------------------------------------------------------------------------------- |
+| `device`       | ✓       | Real `/dev/mem` backend via `memmap2`.                                            |
+| `register-map` | ✓       | The `register_map!` macro (bitfields, typed accessors, arrays).                   |
+| `emulator`     |         | Page-aligned heap buffer instead of `/dev/mem`, for testing without hardware.     |
+| `web`          |         | Browser UI and JSON API for register maps, served by `axum` (optional HTTP auth). |
+
+When both `device` and `emulator` are enabled, **`emulator` wins**. That is
+deliberate: it lets your own crate pull `ddevmem` in as a dev-dependency with
+`features = ["emulator"]` so tests and examples run on a workstation, while the
+real build still targets `/dev/mem` — no `default-features = false` dance.
+
+## Requirements and caveats
+
+Mapping physical memory is a privileged, sharp-edged operation. Before the
+first `DevMem::new` call succeeds, check that:
+
+- **The process can open `/dev/mem`** — that means root, or `CAP_SYS_RAWIO`.
+- **The kernel allows the mapping.** Kernels built with `CONFIG_STRICT_DEVMEM`
+  (most distro kernels) restrict which physical ranges `/dev/mem` will hand
+  out. Device/MMIO regions are typically still reachable; system RAM is not.
+  `CONFIG_IO_STRICT_DEVMEM` tightens this further, and refuses regions claimed
+  by a kernel driver — if a driver already owns your peripheral, unbind it
+  first.
+- **The base address is page-aligned.** It is passed to `mmap` as a file
+  offset, which the kernel requires to be a multiple of the page size. For a
+  peripheral that does not start on a page boundary, map the page it lives in
+  and put the remainder into your register offsets:
+
+  ```rust
+  // Peripheral at 0x4000_1800 → map the page at 0x4000_1000, offsets += 0x800.
+  register_map! {
+      pub unsafe map Regs (u32) {
+          0x800 => rw cr: u32,
+          0x804 => ro sr: u32
+      }
+  }
+  ```
+
+- **Nothing else is driving the same peripheral.** `/dev/mem` gives you an
+  unsynchronized view of the hardware; a kernel driver poking the same
+  registers concurrently will produce exactly the races you would expect.
+
+## Raw memory access with `DevMem`
+
+`DevMem` is the low-level layer: a mapped physical range with volatile
+accessors. Use it directly for one-off pokes, or let a register map wrap it.
+
+```rust
+use ddevmem::DevMem;
+
+let devmem = unsafe { DevMem::new(0x4000_0000, Some(0x1000)) }.unwrap();
+
+// Volatile read / write. `None` means the access is out of bounds or the
+// offset is not aligned for the value type.
+let value: u32 = devmem.read(0x00).unwrap();
+devmem.write(0x04, 0xDEAD_BEEFu32).unwrap();
+
+// Volatile read-modify-write (not atomic).
+devmem.modify::<u32>(0x00, |v| v | (1 << 8)).unwrap();
+
+// Bulk transfers — one volatile access per element, never a memcpy.
+let mut buf = [0u32; 4];
+devmem.read_slice(0x10, &mut buf).unwrap();
+devmem.write_slice(0x10, &[1, 2, 3, 4]).unwrap();
+
+// Geometry.
+assert_eq!(devmem.address(), 0x4000_0000);
+assert_eq!(devmem.len(), 0x1000);
+```
+
+| Method                        | Description                                                              |
+| ----------------------------- | ------------------------------------------------------------------------ |
+| `new(address, size)`          | Maps `size` bytes (default: one page) at a **page-aligned** address.     |
+| `read::<T>(offset)`           | Volatile read; `None` if out of bounds or misaligned for `T`.            |
+| `write(offset, value)`        | Volatile write; same failure conditions.                                 |
+| `modify::<T>(offset, f)`      | Volatile read → `f` → volatile write. **Not** atomic.                    |
+| `read_slice` / `write_slice`  | Element-wise volatile transfer of a `&mut [T]` / `&[T]`.                 |
+| `read_unchecked` / `write_unchecked` | `unsafe`, no bounds or alignment check — used by generated code.  |
+| `address()` / `len()` / `is_empty()` | Geometry of the mapping.                                          |
+| `as_ptr()`                    | Raw `*mut u8` to the first mapped byte, for hand-written access.         |
+
+`T` must be a plain integer type (anything implementing `bytemuck`'s
+`AnyBitPattern` for reads and `NoUninit` for writes).
+
+Errors from `new` are `Error::Open` (could not open `/dev/mem` — usually
+permissions) and `Error::Mmap` (the mapping itself failed — usually a
+misaligned address or a kernel restriction). Both wrap the underlying
+`std::io::Error` and convert back into one via `From`.
+
+## Register maps
+
+### Syntax at a glance
+
+```text
+register_map! {
+    ATTR*  VIS  unsafe map  NAME  ( "(" BUS ")" )?  {
+        ENTRY  ,  ENTRY  ,  …  ,?
+    }
+}
+
+ENTRY   := OFFSET "=>" ATTR* ACCESS NAME ":" TYPE ( "{" FIELD "," … ,? "}" )?
+ACCESS  := "rw" | "ro" | "wo"
+TYPE    := INT | "[" INT ";" LEN "]"
+
+FIELD   := ATTR* NAME ":" BITS ( "as" KIND )?
+BITS    := POS                     // single bit
+         | POS "..=" POS           // inclusive range
+         | POS ".." POS            // exclusive upper bound
+KIND    := "bool" | INT | "enum" NAME "{" VARIANT "," … ,? "}"
+VARIANT := ATTR* NAME "=" CONST_EXPR
+
+INT     := "u8" | "u16" | "u32" | "u64" | "usize"
+POS     := integer literal | "(" CONST_EXPR ")"
+ATTR    := /// doc comment, or any outer #[attribute]
+```
+
+`OFFSET`, `LEN`, and the `CONST_EXPR` forms accept any constant expression —
+literals, `const` items, arithmetic on them. Commas between entries and
+between bitfields are **required**; a trailing one is optional.
+
+### The map header
+
+```rust
+register_map! {
+    /// Doc comment for the generated struct.
+    pub unsafe map Spi (u32) { 0x00 => rw cr: u32 }
+    //  ^^^^^^ ^^^ ^^^  ^^^
+    //  │      │   │    └── bus width (optional, defaults to `usize`)
+    //  │      │   └─────── struct name
+    //  │      └─────────── literal keyword
+    //  └────────────────── acknowledges that `new()` will be unsafe
+}
+```
+
+The **bus width** is the type used for every actual load and store. Set it to
+what the interconnect transports — `u32` for AXI-Lite, for instance — and a
+`u8` register still gets accessed with a single 32-bit transaction, as the
+hardware expects. Values are zero-extended on write and truncated on read.
+
+Omitting `(BUS)` defaults to `usize`, the native pointer width. Prefer stating
+it explicitly: a map that is correct on a 64-bit host silently changes access
+width when cross-compiled to a 32-bit target.
+
+The map's visibility (`pub`, `pub(crate)`, …) is applied to the struct, its
+accessors, and any generated enums.
+
+### Register entries
+
+```text
+0x04 => rw ctrl: u32 { … }
+^^^^    ^^ ^^^^  ^^^   ^^^
+│       │  │     │     └── optional bitfield block
+│       │  │     └──────── register type
+│       │  └────────────── register name (drives every method name)
+│       └───────────────── access kind
+└───────────────────────── byte offset from the mapped base
+```
+
+| Element    | Rules                                                                                                                        |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Offset** | Byte offset from the base address. Must be a multiple of the bus width.                                                      |
+| **Access** | `rw` read-write, `ro` read-only (no setter generated), `wo` write-only (no getter generated).                                |
+| **Name**   | Snake-case; becomes `name()`, `set_name()`, `name_offset()`, and the prefix of every bitfield method.                        |
+| **Type**   | `u8` … `u64` or `usize`, at most as wide as the bus. `[T; N]` declares an array — see [Register arrays](#register-arrays).   |
+
+Choosing the access kind is not cosmetic: on real hardware a read can have side
+effects (popping a FIFO, clearing a latched flag), so `ro`/`wo` remove the
+operations that would be wrong to perform. Two entries may share one offset
+when the hardware aliases read and write behind the same address — the classic
+UART data register:
+
+```rust
+register_map! {
+    pub unsafe map Uart (u32) {
+        0x00 => ro rx: u32,   // reading pops the RX FIFO
+        0x00 => wo tx: u32    // writing pushes the TX FIFO
+    }
+}
+```
+
+### Bitfields
+
+A register may carry a block of named bit ranges:
+
+```rust
+const BASE: u32 = 8;
 
 register_map! {
     pub unsafe map Regs (u32) {
-        0x00 => rw control: u32 {
-            enable:    0,
-            mode:      1..=3,
-            threshold: 4..=7
-        },
-        0x04 => ro status: u32 {
-            ready: 0,
-            error: 1
-        },
-        0x08 => wo command: u32
+        0x00 => rw cr: u32 {
+            enable: 0,        // single bit
+            mode:   1..=3,    // inclusive range: bits 3, 2, 1
+            level:  4..7,     // exclusive upper bound: bits 6, 5, 4
+            speed:  (BASE)..=(BASE + 1)   // constant expressions, parenthesized
+        }
     }
 }
-
-let devmem = unsafe { DevMem::new(0x4000_0000, None).unwrap() };
-let mut regs = unsafe { Regs::new(Arc::new(devmem)).unwrap() };
-
-// Full-register access
-let status = regs.status();
-regs.set_command(0xFF);
-regs.modify_control(|v| v | 1);
-
-// Bitfield access
-let enabled: u32 = regs.control_enable();  // single-bit → value from bit 0
-let mode: u32    = regs.control_mode();     // bits 1..=3
-
-regs.set_control_mode(0b101);              // read-modify-write only the mode bits
 ```
+
+Both range forms exist so the declaration can follow whichever convention the
+datasheet uses; `..=` matches the usual "bits 7:4" notation and is the one to
+reach for by default.
+
+Setters on `rw` registers perform a **read-modify-write and touch only their
+own bits** — bits belonging to other fields, and bits you never declared at
+all, are preserved. There is no need to declare reserved gaps.
+
+On a `wo` register a read-modify-write is impossible (reading is not allowed,
+and on hardware often meaningless), so a bitfield setter writes its field with
+**all other bits zero**. That matches how self-clearing command registers
+behave: `set_cmd_reset(true)` issues "reset, nothing else".
 
 ### Typed bitfields
 
-Bitfields can carry an `as <type>` suffix to change the getter/setter types.
-Three forms are supported: `as bool`, `as <integer>`, and `as enum`.
+Adding `as <kind>` changes the getter's return type and the setter's argument
+type, so values arrive already interpreted:
 
-```rust,no_run
+| Suffix         | Getter returns    | Setter accepts   | Notes                                        |
+| -------------- | ----------------- | ---------------- | -------------------------------------------- |
+| *(none)*       | the register type | register type    | Raw value, shifted down to bit 0.            |
+| `as bool`      | `bool`            | `bool`           | Single-bit fields only.                      |
+| `as u8` (etc.) | `u8`              | `u8`             | Any unsigned type wide enough for the field. |
+| `as enum Name` | `Name`            | `Name`           | Generates the enum; see below.               |
+
+```rust
 use std::sync::Arc;
 use ddevmem::{register_map, DevMem};
 
 register_map! {
-    /// Timer controller with typed bitfields.
-    pub unsafe map TimerRegs (u32) {
-        0x00 =>
-            /// Control register.
-            rw cr: u32 {
-                /// Enable flag.
-                enable: 0 as bool,
-                /// Prescaler (0–15).
-                psc: 2..=5 as u8,
-                /// Operating mode.
-                mode: 6..=7 as enum TimerMode {
-                    Stopped  = 0,
-                    OneShot  = 1,
-                    FreeRun  = 2,
-                    External = 3,
-                },
-            }
+    pub unsafe map Timer (u32) {
+        0x00 => rw cr: u32 {
+            /// Counter enable.
+            enable: 0 as bool,
+            /// Clock prescaler (0–15).
+            psc: 2..=5 as u8,
+            /// Operating mode.
+            mode: 6..=7 as enum TimerMode {
+                Stopped  = 0,
+                OneShot  = 1,
+                FreeRun  = 2,
+                External = 3,
+            },
+        }
     }
 }
 
-let devmem = unsafe { DevMem::new(0x4000_0000, None).unwrap() };
-let mut timer = unsafe { TimerRegs::new(Arc::new(devmem)).unwrap() };
+let devmem = unsafe { DevMem::new(0x4000_0000, None) }.unwrap();
+let mut timer = unsafe { Timer::new(Arc::new(devmem)) }.unwrap();
 
-timer.set_cr_enable(true);            // bool
-timer.set_cr_psc(7);                  // u8
-timer.set_cr_mode(TimerMode::FreeRun); // enum
+timer.set_cr_enable(true);
+timer.set_cr_psc(7);
+timer.set_cr_mode(TimerMode::FreeRun);
 
 assert_eq!(timer.cr_enable(), true);
 assert_eq!(timer.cr_psc(), 7u8);
 assert_eq!(timer.cr_mode(), TimerMode::FreeRun);
 ```
 
-### Documented register map
+An `as enum` field generates a real Rust enum next to the map struct:
 
-Doc comments (`/// ...`) can be placed on the struct, on individual registers
-(after `=>`), and on individual bitfields. Comments are forwarded to generated
-Rust doc and displayed in the web UI when the `web` feature is enabled.
+- derives `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, and implements
+  `Display` (same text as `Debug`);
+- `Name::from_raw(raw)` converts a raw field value — values matching no
+  variant fall back to the **first declared variant**, because hardware can
+  always hand you a reserved encoding;
+- `Name::to_raw()` converts back;
+- variant values must fit the field's width, and duplicates are rejected at
+  compile time.
 
-```rust,no_run
-use std::sync::Arc;
-use ddevmem::{register_map, DevMem};
+### Register arrays
 
-register_map! {
-    /// SPI controller registers.
-    pub unsafe map SpiRegs (u32) {
-        0x00 =>
-            /// SPI control register.
-            rw cr: u32 {
-                /// Chip select — active-low output selector.
-                cs:     0..=2,
-                /// Clock polarity (CPOL).
-                cpol:   3,
-                /// Clock phase (CPHA).
-                cpha:   4,
-                /// Transfer enable.
-                enable: 5
-            },
-        0x04 =>
-            /// SPI status register.
-            ro sr: u32 {
-                /// Transmit FIFO empty.
-                txe:  0,
-                /// Receive FIFO not empty.
-                rxne: 1,
-                /// Busy flag — transfer in progress.
-                busy: 7
-            },
-        0x08 =>
-            /// SPI data register — write to transmit, read to receive.
-            rw dr: u32,
-        0x0C =>
-            /// Baud rate divisor (actual rate = PCLK / (2 * (div + 1))).
-            rw brr: u32 {
-                /// Divisor value (0..=255).
-                div: 0..=7
-            }
-    }
-}
+Declaring a register as `[T; N]` describes `N` identical registers laid out one
+bus word apart, starting at the given offset:
 
-let devmem = unsafe { DevMem::new(0x4002_0000, None).unwrap() };
-let mut spi = unsafe { SpiRegs::new(Arc::new(devmem)).unwrap() };
-
-// Wait until TX FIFO is empty, then send a byte
-while spi.sr_txe() == 0 {}
-spi.set_dr(0x42);
-
-// Configure: CPOL=1, CPHA=0, chip-select 2, enable
-spi.set_cr_cpol(1);
-spi.set_cr_cpha(0);
-spi.set_cr_cs(2);
-spi.set_cr_enable(1);
-```
-
-### `register_map!` syntax reference
-
-```text
-register_map! {
-    /// Optional struct-level doc comment.
-    $vis unsafe map $Name ($bus_width) {
-        $offset =>
-            /// Optional register doc comment.
-            $kind $name: $type {
-                /// Optional bitfield doc comment.
-                field: bits,
-                ...
-            },
-        ...
-    }
-}
-```
-
-| Element        | Description                                                  |
-| -------------- | ------------------------------------------------------------ |
-| `$vis`         | Visibility (`pub`, `pub(crate)`, etc.).                      |
-| `$Name`        | Name of the generated struct.                                |
-| `($bus_width)` | Optional bus type (e.g. `u32`). All accesses use this width. |
-| `$offset`      | Byte offset of the register (`0x00`, `0x04`, …).             |
-| `$kind`        | `rw` (read-write), `ro` (read-only), or `wo` (write-only).   |
-| `$name`        | Register name — drives the generated method names.           |
-| `$type`        | Register type (`u8`, `u16`, `u32`, `u64`, `usize`); at most as wide as the bus. |
-
-**Bitfield syntax:**
-
-```text
-field_name: bit             // single bit
-field_name: lo..=hi         // inclusive range (recommended)
-field_name: lo..hi          // exclusive upper bound (Rust convention)
-```
-
-A bitfield can carry an `as <type>` suffix to produce typed getters/setters:
-
-```text
-field: bit        as bool              // getter → bool, setter accepts bool (single-bit only)
-field: lo..=hi    as u8                // getter → u8,   setter accepts u8 (any unsigned int)
-field: lo..=hi    as enum Name {       // getter → Name, setter accepts Name
-    Variant = value,                   //   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    ...,                               //   with from_raw() / to_raw() methods
-}
-```
-
-Bits not covered by any field declaration are left untouched during
-read-modify-write — there is no need to declare reserved gaps.
-
-On **write-only registers** a read-modify-write is impossible, so a bitfield
-setter writes the field value with all other bits zero (the usual semantics
-of self-clearing command registers).
-
-The macro validates the declaration at compile time: misaligned offsets, bit
-ranges that exceed the register type, `as bool` on multi-bit fields, enum
-values that don't fit their field, casts narrower than the field, and name
-collisions between generated methods are all reported as compile errors
-pointing at the offending token.
-
-**Register arrays.** A register declared as `[T; N]` becomes a contiguous
-run of `N` identical registers at `offset, offset + size_of::<bus>(), …`.
-Accessors take an extra `idx: usize` parameter, and any bitfields on the
-array entry get the same treatment:
-
-```text
-0x10 =>
-    rw fifo: [u32; 8],          // -> fifo(i), set_fifo(i, v), modify_fifo(i, f), fifo_len()
-0x40 =>
-    rw chan: [u32; 4] {         // -> chan(i), set_chan(i, v), chan_len()
-        enable: 0    as bool,   // -> chan_enable(i), set_chan_enable(i, b)
-        prio:   1..=3 as u8     // -> chan_prio(i),   set_chan_prio(i, n)
-    }
-```
-
-A complete example using the array API:
-
-```rust,no_run
+```rust
 use std::sync::Arc;
 use ddevmem::{register_map, DevMem};
 
 register_map! {
     pub unsafe map Dma (u32) {
-        0x10 => rw fifo: [u32; 8],
-        0x40 => rw chan: [u32; 4] {
-            enable: 0    as bool,
-            prio:   1..=3 as u8
-        }
+        0x10 =>
+            /// 8-entry data FIFO at 0x10, 0x14, … 0x2C.
+            rw fifo: [u32; 8],
+        0x40 =>
+            /// Four channel-control registers, each with its own bitfields.
+            rw chan: [u32; 4] {
+                enable: 0     as bool,
+                prio:   1..=3 as u8
+            }
     }
 }
 
-let devmem = unsafe { DevMem::new(0x4002_0000, None).unwrap() };
-let mut dma = unsafe { Dma::new(Arc::new(devmem)).unwrap() };
+let devmem = unsafe { DevMem::new(0x4000_0000, None) }.unwrap();
+let mut dma = unsafe { Dma::new(Arc::new(devmem)) }.unwrap();
 
-// Whole-register access by index.
-for i in 0..dma.fifo_len() {
-    dma.set_fifo(i, (i as u32) * 0x1111_1111);
+for i in 0..dma.fifo_len() {          // fifo_len() == 8
+    dma.set_fifo(i, i as u32);        // accessors take a leading index
 }
-let head: u32 = dma.fifo(0);
+assert_eq!(dma.fifo(3), 3);
+assert_eq!(dma.fifo_offset(3), 0x1C);
 
-// Bitfield access on each array element.
-for i in 0..dma.chan_len() {
-    dma.set_chan_enable(i, true);
+for i in 0..4 {
+    dma.set_chan_enable(i, true);     // bitfields are indexed too
     dma.set_chan_prio(i, i as u8);
 }
-assert!(dma.chan_enable(0));
-assert_eq!(dma.chan_prio(2), 2u8);
 ```
 
-**Generated methods per register:**
+Indices are bounds-checked at runtime and panic with the register's name if out
+of range. The array's full extent counts toward the region size that `new()`
+requires.
 
-| Kind        | Method            | Description                         |
-| ----------- | ----------------- | ----------------------------------- |
-| all         | `name_offset()`   | Byte offset within DevMem.          |
-| all         | `name_address()`  | Physical address (`base + offset`). |
-| `rw` / `ro` | `name()`          | Volatile read.                      |
-| `rw` / `wo` | `set_name(value)` | Volatile write.                     |
-| `rw`        | `modify_name(f)`  | Volatile read-modify-write.         |
+### Documentation comments
 
-**Generated methods per bitfield:**
+`///` comments may be attached to the map, to individual registers (after the
+`=>`), to bitfields, and to enum variants. Each one is forwarded to the
+generated item, so it shows up in `cargo doc` and on hover in your editor — and
+in the web UI, which is what turns that page into a browsable datasheet.
 
-| Kind        | Method                 | Description                            |
-| ----------- | ---------------------- | -------------------------------------- |
-| `rw` / `ro` | `reg_field()`          | Extract field bits.                    |
-| `rw` / `wo` | `set_reg_field(value)` | Read-modify-write only the field bits. |
+The generated struct's rustdoc also gets an **automatic summary table** of
+every register with its offset, access kind, type, and first doc line.
 
-When a type suffix is present the return / argument type changes accordingly:
+Alongside the comments you write, the macro appends a generated line describing
+what each accessor does, for example: *"Writes bits 7:4 of `cr` via
+read-modify-write; the other bits are preserved."*
 
-| Suffix         | Getter returns | Setter accepts |
-| -------------- | -------------- | -------------- |
-| *(none)*       | register type  | register type  |
-| `as bool`      | `bool`         | `bool`         |
-| `as u8` (etc.) | `u8`           | `u8`           |
-| `as enum Name` | `Name`         | `Name`         |
+### Generated API reference
 
-### Web UI (`web` feature)
+For a map named `Regs` with a register `cr` (type `u32`) and a bitfield `en`:
 
-The `web` feature adds a browser-based interface for viewing and editing
-registers at runtime. It is powered by `axum` and requires `tokio`.
+| Item                        | Signature                                         | Generated for          |
+| --------------------------- | ------------------------------------------------- | ---------------------- |
+| `Regs::new(devmem)`         | `unsafe fn(Arc<DevMem>) -> Option<Self>`          | always                 |
+| `cr_offset()`               | `fn(&self) -> usize`                              | always                 |
+| `cr_address()`              | `fn(&self) -> usize`                              | always                 |
+| `cr()`                      | `fn(&self) -> u32`                                | `rw`, `ro`             |
+| `set_cr(value)`             | `fn(&mut self, u32)`                              | `rw`, `wo`             |
+| `modify_cr(f)`              | `fn(&mut self, impl FnOnce(u32) -> u32)`          | `rw`                   |
+| `cr_en()`                   | `fn(&self) -> u32`                                | `rw`, `ro`             |
+| `set_cr_en(value)`          | `fn(&mut self, u32)`                              | `rw`, `wo`             |
 
-When `web` is enabled, `register_map!` auto-implements the
-`RegisterMapInfo` trait, which exposes register metadata (names, offsets,
-access types, bitfield descriptions, doc strings) and raw read/write access.
+For an array register `fifo: [u32; N]` every accessor gains a leading
+`idx: usize` parameter (`fifo(idx)`, `set_fifo(idx, value)`,
+`fifo_offset(idx)`, `set_fifo_en(idx, value)`, …) and one extra method appears:
 
-```rust,no_run
+| Item          | Signature            | Description                    |
+| ------------- | -------------------- | ------------------------------ |
+| `fifo_len()`  | `fn(&self) -> usize` | Number of elements, i.e. `N`.  |
+
+`new()` returns `None` when the mapped region is shorter than the declared
+registers need; after that every access is known to be in bounds, so the
+generated accessors carry no per-access checks. The struct is `Send + Sync`
+(it holds only an `Arc<DevMem>`).
+
+The generated code is designed to be readable — `cargo expand` shows one-line
+accessors over a small set of private helpers, with masks already folded into
+literals:
+
+```rust,ignore
+pub fn cr_psc(&self) -> u8 {
+    ((self.__read(0x00) >> 2) & 0xF) as u8
+}
+pub fn set_chan_prio(&mut self, idx: usize, value: u8) {
+    self.__update(self.chan_offset(idx), 0x7 << 1, ((value as u32) & 0x7) << 1)
+}
+```
+
+### Compile-time checks
+
+Most declaration mistakes are rejected while the macro expands, with the error
+pointing at the token at fault:
+
+| Mistake                                                | Reported as                                                             |
+| ------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `0x02 => rw a: u32` on a `u32` bus                     | offset `0x2` is not aligned to the 4-byte bus width                     |
+| `rw b: u64` on a `u32` bus                             | register type is wider than the `u32` bus (8 > 4 bytes)                 |
+| `f: 7..=4`                                             | bitfield `f`: high bit 4 is below low bit 7                             |
+| `g: 40` in a `u32` register                            | bitfield `g`: bit 40 does not exist in the 32-bit register type         |
+| `h: 0..=2 as bool`                                     | `as bool` requires a single-bit field, but `h` spans 3 bits             |
+| `i: 0..=9 as u8`                                       | cast type `u8` is narrower than the 10-bit field `i`                    |
+| `e: 3..=4 as enum E { X = 9 }`                         | variant value `0x9` does not fit in the 2-bit field `e`                 |
+| Two registers named `a`                                | this declaration generates a method named `a`, which an earlier one also generates |
+| `rw d: [u32; 0]`                                       | register array length must be at least 1                                |
+| Missing comma between entries                          | expected `,`                                                            |
+
+Checks that cannot be resolved at expansion time — a `usize` register, an
+offset built from a `const` from another crate — are emitted as `const`
+assertions instead, so they still fail the build rather than the board.
+
+## Web UI
+
+Enabling the `web` feature makes `register_map!` additionally implement
+`RegisterMapInfo`, exposing the map's metadata. `WebUi` turns any number of
+maps into an `axum` router serving a single self-contained page — no CDN, no
+build step.
+
+```rust
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use ddevmem::{register_map, DevMem};
+use ddevmem::web::WebUi;
 
 register_map! {
     /// PWM controller.
-    pub unsafe map PwmRegs (u32) {
+    pub unsafe map Pwm (u32) {
         0x00 =>
-            /// PWM control register.
+            /// Control register.
             rw cr: u32 {
-                /// Channel enable (one bit per channel).
+                /// Per-channel enable bits.
                 ch_en: 0..=3,
                 /// Prescaler (0 = /1, 1 = /2, … 7 = /128).
-                psc:   4..=6
+                psc: 4..=6
             },
-        0x04 =>
-            /// PWM period register (in timer ticks).
-            rw period: u32,
-        0x08 =>
-            /// PWM duty cycle register.
-            rw duty: u32,
-        0x0C =>
-            /// PWM status (read-only).
-            ro sr: u32 {
-                /// Currently running.
-                running: 0
-            }
+        0x04 => rw period: u32,
+        0x08 => rw duty: u32
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let devmem = unsafe { DevMem::new(0x4001_0000, None).unwrap() };
-    let regs = unsafe { PwmRegs::new(Arc::new(devmem)).unwrap() };
-    let regs = Arc::new(Mutex::new(regs));
+    let devmem = unsafe { DevMem::new(0x4001_0000, None) }.unwrap();
+    let regs = unsafe { Pwm::new(Arc::new(devmem)) }.unwrap();
 
-    let app = ddevmem::web::WebUi::new()
-        .add("pwm", regs)
+    let app = WebUi::new()
+        .add("pwm", Arc::new(Mutex::new(regs)))
         .build();
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Register map UI at http://localhost:3000");
+    println!("Register UI at http://localhost:3000");
     axum::serve(listener, app).await.unwrap();
 }
 ```
 
-**With HTTP Basic authentication:**
+The page gives you live values with optional 1 s auto-refresh, per-register and
+per-bitfield write controls (typed fields become dropdowns), your `///` docs
+inline, a collapsible sidebar with one group per map, a text dump of all
+registers, and a light/dark theme toggle.
 
-> **Security note.** HTTP Basic transmits credentials `base64`-encoded, **not
-> encrypted** — always run the server behind TLS (e.g. `nginx`, `caddy`,
-> `axum-server` + `rustls`) for anything beyond a trusted local network.
-> Compare secrets in **constant time** with [`ct_eq`](https://docs.rs/ddevmem/latest/ddevmem/web/fn.ct_eq.html)
-> instead of `==` to avoid leaking the password through response timing,
-> and use bitwise `&` (not `&&`) so both comparisons run unconditionally.
+**Several maps, one page.** Call `.add()` once per map; each gets a URL slug
+(ASCII `[a-zA-Z0-9_-]`) and its own sidebar group. Two instances of the same
+map type at different base addresses are fine.
 
-`with_auth` takes an **async** callback `Fn(String, String) -> Future<Output = bool>`,
-so the closure body must be an `async move { ... }` block. This lets the
-check perform I/O (e.g. database lookup) without blocking the runtime.
+```rust
+register_map! { pub unsafe map Spi (u32) { 0x00 => rw cr: u32 } }
+register_map! { pub unsafe map Gpio (u32) { 0x00 => rw data: u32 } }
 
-```rust,no_run
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use ddevmem::{register_map, DevMem};
+fn build(spi: Arc<Mutex<Spi>>, gpio: Arc<Mutex<Gpio>>) -> axum::Router {
+    axum::Router::new().nest(
+        "/hw",
+        WebUi::new()
+            .with_title("Acme SoC — Hardware Registers")
+            .add("spi", spi)
+            .add("gpio", gpio)
+            .build(),
+    )
+}
+```
+
+**Mounting.** The returned `Router` has no root path baked in: serve it
+directly, or nest it under a prefix as above (then browse to `/hw` — note that
+`axum` does not allow nesting at `"/"`, and that `/hw/` with a trailing slash
+does not match).
+
+**Authentication.** `with_auth` adds HTTP Basic auth to every endpoint. The
+callback is async, so it can query a database or an auth service; for static
+credentials use `ct_eq`, and combine checks with bitwise `&` rather than `&&`
+so both comparisons always run:
+
+```rust
 use ddevmem::web::{ct_eq, WebUi};
 
-register_map! {
-    pub unsafe map R (u32) { 0x00 => rw x: u32 }
-}
-
-async fn build_apps(regs: Arc<Mutex<R>>) {
-    // Static credentials (constant-time comparison).
-    let _app = WebUi::new()
-        .add("r", regs.clone())
+fn build(regs: Arc<Mutex<Pwm>>) -> axum::Router {
+    WebUi::new()
+        .add("pwm", regs)
         .with_auth(|user, pass| async move {
             ct_eq(&user, "admin") & ct_eq(&pass, "hunter2")
         })
-        .build();
-
-    // Or validate against an external source (sync or async — both work
-    // inside the `async move` block).
-    let _app = WebUi::new()
-        .add("r", regs)
-        .with_auth(|user, pass| async move {
-            my_auth_db::check(&user, &pass).await
-        })
-        .build();
-}
-
-mod my_auth_db {
-    pub async fn check(_u: &str, _p: &str) -> bool { true }
+        .build()
 }
 ```
 
-The web UI provides:
+> **Security.** HTTP Basic sends credentials `base64`-encoded, **not
+> encrypted**. Treat the UI as a trusted-network tool (lab bench, internal
+> VLAN, SSH tunnel); anything exposed belongs behind TLS (`nginx`, `caddy`,
+> `axum-server` + `rustls`). Comparing secrets with `==` leaks them through
+> response timing — that is what `ct_eq` is for. There is no built-in CSRF
+> protection or rate limiting; a reverse proxy enforcing `Origin`/`Referer`
+> checks covers both.
 
-- Live register values with auto-refresh
-- Per-register and per-bitfield read/write controls
-- Accordion sidebar: one collapsible group per map (collapsed by default);
-  the group header jumps to the map, registers link to individual cards
-- Documentation strings from `/// ...` comments
-- JSON API for integration with external tools
-- **Nestable router** — mount the web UI at any prefix on a larger server
+### HTTP API
 
-The returned `Router` has no root path baked in.
-Use `axum::Router::nest()` to mount it wherever you need:
-
-```rust,no_run
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use ddevmem::{register_map, DevMem};
-use ddevmem::web::WebUi;
-
-register_map! {
-    pub unsafe map R (u32) { 0x00 => rw x: u32 }
-}
-
-async fn run(regs: Arc<Mutex<R>>) {
-    // Mount at a custom prefix:
-    let app = axum::Router::new().nest(
-        "/registers/axi",
-        WebUi::new().add("axi", regs).build(),
-    );
-    // ... axum::serve(listener, app).await.unwrap();
-    let _ = app;
-}
-```
-
-**API endpoints** (relative to mount point):
+All paths are relative to the mount point, so the UI can be scripted with
+`curl` just as easily as clicked:
 
 | Method | Path                | Body                           | Response                                              |
 | ------ | ------------------- | ------------------------------ | ----------------------------------------------------- |
-| GET    | `/`                 | —                              | HTML single-page app                                  |
-| GET    | `/api/maps`         | —                              | `{ title?: string, maps: [{ slug, name }, ...] }`     |
+| GET    | `/`                 | —                              | The HTML page                                         |
+| GET    | `/api/maps`         | —                              | `{ title?: string, maps: [{ slug, name }, …] }`       |
 | GET    | `/api/{slug}/info`  | —                              | `{ name, bus_width, base_address, registers: [...] }` |
 | POST   | `/api/{slug}/read`  | `{ "offset": 0 }`              | `{ "value": 12345, "hex": "0x3039" }`                 |
 | POST   | `/api/{slug}/write` | `{ "offset": 0, "value": 42 }` | `200 OK`                                              |
 
-`value` in a write request may be a JSON number or a string (`"0x2A"` /
-`"42"`); the string form carries the full 64-bit range, which JSON numbers
-lose above 2⁵³. Reads return the value in both forms for the same reason.
+`value` on write may be a JSON number or a string (`"0x2A"`, `"42"`); the
+string form carries the full 64-bit range, which JSON numbers lose above 2⁵³.
+Reads return both forms for the same reason.
 
-Requests are validated against the declared map: an offset that does not
-address a readable (respectively writable) register — unknown, misaligned,
-write-only on read, read-only on write — is rejected with `400 Bad Request`,
-and written values must fit the bus width.
+Requests are validated against the declared map: an offset that is unknown,
+misaligned, or belongs to a register that cannot be read (respectively
+written) is rejected with `400 Bad Request`, as is a value too wide for the
+bus. The UI cannot reach memory your map does not describe.
 
-**Custom page title:**
+## Testing without hardware
 
-The heading shown in the browser tab and the UI-Shell header defaults to
-`ddevmem — Register Maps` (or the map's own name in single-map mode).
-Override it with [`WebUi::with_title`](https://docs.rs/ddevmem/latest/ddevmem/web/struct.WebUi.html#method.with_title):
+The `emulator` feature replaces `/dev/mem` with a page-aligned, zero-filled
+heap buffer. The API is identical, so register logic can be exercised in
+ordinary unit tests.
 
-```rust,no_run
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use ddevmem::{register_map, DevMem};
-use ddevmem::web::WebUi;
+The usual setup keeps the real backend for the build and switches to the
+emulator for tests — listing the crate twice is all it takes, because Cargo
+unifies the two feature sets only for targets that use dev-dependencies, and
+`emulator` then takes precedence:
 
-register_map! {
-    pub unsafe map R (u32) { 0x00 => rw x: u32 }
-}
+```toml
+[dependencies]
+ddevmem = "0.5.0"
 
-async fn run(regs: Arc<Mutex<R>>) {
-    let _app = WebUi::new()
-        .with_title("Acme SoC — Hardware Registers")
-        .add("r", regs)
-        .build();
-}
+[dev-dependencies]
+# `cargo test` / `cargo run --example …` build against the emulator;
+# `cargo build` still targets /dev/mem.
+ddevmem = { version = "0.5.0", features = ["emulator"] }
 ```
 
-**Hosting multiple register maps on one page:**
-
-The same `WebUi` builder accepts several `.add(slug, regs)` calls.
-All maps are displayed together on a single page.
-
-```rust,no_run
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use ddevmem::{register_map, DevMem};
-use ddevmem::web::WebUi;
-
-register_map! {
-    pub unsafe map Spi (u32) { 0x00 => rw cr: u32 }
-}
-register_map! {
-    pub unsafe map Gpio (u32) { 0x00 => rw data: u32 }
-}
-
-async fn run(spi: Arc<Mutex<Spi>>, gpio: Arc<Mutex<Gpio>>) {
-    let app = axum::Router::new().nest(
-        "/hw",
-        WebUi::new()
-            .add("spi", spi)
-            .add("gpio", gpio)
-            .build(),
-    );
-
-    // With auth:
-    // let r = WebUi::new()
-    //     .add("spi", spi_regs)
-    //     .add("gpio", gpio_regs)
-    //     .with_auth(|u, p| async move { u == "admin" && p == "secret" })
-    //     .build();
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
-}
-```
-
-### Using the emulator for testing
-
-The `emulator` feature replaces `/dev/mem` with a zero-initialized heap buffer,
-allowing you to test register map logic without hardware:
-
-```rust,no_run
-// Cargo.toml:
-// ddevmem = { version = "0.5.0", default-features = false, features = ["emulator", "register-map"] }
-
+```rust
 use std::sync::Arc;
 use ddevmem::{register_map, DevMem};
 
 register_map! {
-    pub unsafe map TestRegs (u32) {
+    pub unsafe map Regs (u32) {
         0x00 => rw data: u32,
         0x04 => rw ctrl: u32 {
-            run: 0,
-            irq_en: 1
+            run: 0 as bool,
+            irq_en: 1 as bool
         }
     }
 }
 
-// DevMem backed by Vec<u8> — no /dev/mem needed
-let devmem = unsafe { DevMem::new(0x0, Some(256)).unwrap() };
-let mut regs = unsafe { TestRegs::new(Arc::new(devmem)).unwrap() };
+// No /dev/mem, no root, no board.
+let devmem = unsafe { DevMem::new(0x0, Some(256)) }.unwrap();
+let mut regs = unsafe { Regs::new(Arc::new(devmem)) }.unwrap();
 
 regs.set_data(0xCAFE);
 assert_eq!(regs.data(), 0xCAFE);
 
-regs.set_ctrl_run(1);
-assert_eq!(regs.ctrl_run(), 1);
-assert_eq!(regs.ctrl_irq_en(), 0); // other bits untouched
+regs.set_ctrl_run(true);
+assert!(regs.ctrl_run());
+assert!(!regs.ctrl_irq_en());   // neighbouring bits untouched
 ```
+
+The buffer is page-aligned precisely so that alignment behaviour matches a real
+mapping — an emulator test that passes will not hit an alignment fault on the
+board.
+
+## Safety
+
+Two constructors are `unsafe`, each with a contract the compiler cannot check:
+
+- **`DevMem::new`** maps arbitrary physical memory. The caller must ensure the
+  range is one the process may map and that touching it is acceptable —
+  reads and writes go to real devices, with real side effects.
+- **`Map::new`** does not track claimed regions. The caller must ensure no
+  other register map or mapping aliases the same memory with conflicting
+  expectations.
+
+Everything generated afterwards is safe to call: offsets were bounds-checked in
+the constructor, array indices are checked on use, and bitfield math cannot go
+out of range because it was validated at compile time.
+
+`DevMem` is `Send + Sync` but performs **no internal synchronization** —
+hardware registers cannot be protected by the type system. Share a map across
+tasks with `Arc<Mutex<…>>` (which is exactly what `WebUi` requires).
 
 ## Migration from 0.4
 
 `ddevmem` 0.5 is a cleanup release with a handful of **breaking** changes:
 
-| 0.4                                              | 0.5                                                                                       |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------- |
-| `Error::CantOpenFile` / `Error::CantMmapFile`    | `Error::Open` / `Error::Mmap`                                                             |
-| Bitfield setters on `wo` registers read-modify-write (reading a write-only register!) | They write the field with all other bits zero                |
-| `DevMem::read`/`write`/`modify` accepted misaligned offsets (UB)                       | Misaligned offsets return `None`; `read_unchecked`/`write_unchecked` added |
-| Web API accepted any offset and wrote to `ro` registers                               | Offsets are validated against the declared map               |
-| Register types were unchecked                    | Must be `u8`/`u16`/`u32`/`u64`/`usize`; bit ranges, enum values, and name collisions are compile errors |
-| Missing commas between registers were silently accepted                               | Commas are required (trailing comma still optional)          |
-| `/api/{slug}/read` returned `{ value }`          | Returns `{ value, hex }`; writes also accept string values (full 64-bit range)            |
+| 0.4                                                                                   | 0.5                                                                                                       |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `Error::CantOpenFile` / `Error::CantMmapFile`                                         | `Error::Open` / `Error::Mmap`                                                                             |
+| Bitfield setters on `wo` registers did a read-modify-write (reading a write-only register!) | They write the field with all other bits zero                                                        |
+| `DevMem::read`/`write`/`modify` accepted misaligned offsets (undefined behaviour)      | Misaligned offsets return `None`; `read_unchecked` / `write_unchecked` added for generated code           |
+| The web API accepted any offset and would write to `ro` registers                      | Offsets and access kinds are validated against the declared map                                           |
+| Register types were unchecked                                                          | Must be `u8`/`u16`/`u32`/`u64`/`usize`; bit ranges, enum values, and name collisions are compile errors    |
+| Missing commas between registers were silently accepted                                | Commas are required (a trailing one is still optional)                                                    |
+| `/api/{slug}/read` returned `{ value }`                                                | Returns `{ value, hex }`; writes also accept string values, covering the full 64-bit range                |
+
+The `register_map!` syntax itself is unchanged — existing maps compile as they
+are, provided they were already well-formed.
 
 ## Examples
 
-The crate ships several runnable examples under [`examples/`](./examples).
-Each one enables the `emulator` feature, so they work without `/dev/mem`.
+Every example runs against the emulator, so none of them need `/dev/mem` or
+root:
 
-| File                | Topic                                                              |
-| ------------------- | ------------------------------------------------------------------ |
-| `default_bus.rs`    | Minimal register map with `rw` / `ro` / `wo` access.               |
-| `bitfield.rs`       | Plain numeric bitfields, doc comments.                             |
-| `typed_bitfield.rs` | Typed bitfields: `as bool`, `as u8`, `as enum`.                    |
-| `array_regs.rs`     | Register arrays (`[T; N]`) with per-element bitfields.             |
-| `web_server.rs`     | Single map served via the `web` feature.                           |
-| `web_auth.rs`       | Web UI behind HTTP Basic auth (constant-time `ct_eq`).             |
-| `web_same_map.rs`   | Two instances of the same map at different base addresses.         |
-| `web_showcase.rs`   | Full-feature showcase: 4 peripherals, every bitfield kind, arrays. |
-
-Run any of them with:
+| File                | Topic                                                                     |
+| ------------------- | ------------------------------------------------------------------------- |
+| `default_bus.rs`    | Minimal map: `rw` / `ro` / `wo`, offsets and addresses.                   |
+| `bitfield.rs`       | Plain numeric bitfields and doc comments.                                 |
+| `typed_bitfield.rs` | `as bool`, `as u8`, `as enum`, and `from_raw` fallback behaviour.         |
+| `array_regs.rs`     | Register arrays (`[T; N]`) with per-element bitfields.                    |
+| `web_server.rs`     | One map served on `http://localhost:3000`.                                |
+| `web_auth.rs`       | Web UI behind HTTP Basic auth with constant-time comparison.              |
+| `web_same_map.rs`   | Two instances of one map type at different base addresses, on `/hw`.      |
+| `web_showcase.rs`   | Four peripherals on three bus widths, every bitfield kind, arrays.        |
 
 ```sh
-cargo run --example <name>              # web_* examples: add --features web
+cargo run --example typed_bitfield
+cargo run --example web_showcase --features web   # then open http://localhost:8800/hw
 ```
 
 ## License

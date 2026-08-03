@@ -5,7 +5,7 @@
 //! Run with:
 //!   cargo run --example web_same_map --features web
 //!
-//! Then open http://localhost:3000/hw/ and verify:
+//! Then open http://localhost:3000/hw and verify:
 //!   - Two `TimerRegs` sections appear with different base addresses.
 //!   - Enum fields show dropdown selectors.
 //!   - Bool fields show true/false dropdowns.
