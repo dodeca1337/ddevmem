@@ -71,7 +71,7 @@ uart.set_txd(b'!' as u32);
   surprise at 3 a.m. on the bench.
 - **Live web UI** (optional) — one self-contained page served by `axum`,
   showing every register and bitfield with the documentation from your `///`
-  comments, plus a JSON API for scripting.
+  comments, plus a JSON API for scripting ([screenshots](#web-ui)).
 - **Runs without hardware** — the `emulator` backend swaps `/dev/mem` for a
   page-aligned heap buffer, so register logic can be unit-tested on a laptop.
 
@@ -517,6 +517,15 @@ Enabling the `web` feature makes `register_map!` additionally implement
 maps into an `axum` router serving a single self-contained page — no CDN, no
 build step.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-dark.png">
+  <img alt="The ddevmem web UI: a sidebar listing four register maps with the UART map expanded, and register cards showing values, bitfields and documentation." src="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-light.png">
+</picture>
+
+*The `web_showcase` example: four peripherals on three bus widths. Every map
+gets a collapsible sidebar group; the theme follows the browser and can be
+toggled.*
+
 ```rust
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -555,9 +564,21 @@ async fn main() {
 ```
 
 The page gives you live values with optional 1 s auto-refresh, per-register and
-per-bitfield write controls (typed fields become dropdowns), your `///` docs
-inline, a collapsible sidebar with one group per map, a text dump of all
-registers, and a light/dark theme toggle.
+per-bitfield write controls, your `///` docs inline, a text dump of all
+registers, and a light/dark theme toggle. Each register becomes a card with its
+bitfields broken out — `as bool` and `as enum` fields turn into dropdowns of
+their variants, so nobody has to remember that parity 1 means even:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-register-dark.png">
+  <img alt="A single register card: the UART control register with its six bitfields, each showing bit positions, decoded value, a set control and its documentation." src="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-register-light.png">
+</picture>
+
+Register arrays are expanded element by element, so `fifo: [u32; 8]` is
+addressable as `fifo[0]` … `fifo[7]` in the UI just as it is in Rust:
+
+<img alt="The DMA map in the web UI, its sidebar listing fifo[0] through fifo[7] and chan[0] through chan[3] with their individual offsets." src="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-arrays-dark.png">
+
 
 **Several maps, one page.** Call `.add()` once per map; each gets a URL slug
 (ASCII `[a-zA-Z0-9_-]`) and its own sidebar group. Two instances of the same

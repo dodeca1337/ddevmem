@@ -15,6 +15,9 @@ readme = "README.md"
 keywords = ["devmem", "mmio", "register", "embedded", "hardware"]
 categories = ["embedded", "hardware-support", "os::linux-apis"]
 documentation = "https://docs.rs/ddevmem"
+# README screenshots are served from the repository, so they only bloat the
+# published crate.
+exclude = ["/docs", "/.claude"]
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
