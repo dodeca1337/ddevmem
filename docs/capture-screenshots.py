@@ -179,15 +179,16 @@ def main():
             )
 
         # Register arrays: fifo[0..8] / chan[0..4] expanded in the sidebar.
-        shot(
-            chrome,
-            "ui-arrays-dark.png",
-            1440,
-            900,
-            "dark",
-            "toggleNavGroup('dma', true);"
-            "document.getElementById('map-dma').scrollIntoView();",
-        )
+        for theme in ("dark", "light"):
+            shot(
+                chrome,
+                f"ui-arrays-{theme}.png",
+                1440,
+                900,
+                theme,
+                "toggleNavGroup('dma', true);"
+                "document.getElementById('map-dma').scrollIntoView();",
+            )
     finally:
         chrome.close()
 

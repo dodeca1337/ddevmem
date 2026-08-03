@@ -577,7 +577,10 @@ their variants, so nobody has to remember that parity 1 means even:
 Register arrays are expanded element by element, so `fifo: [u32; 8]` is
 addressable as `fifo[0]` … `fifo[7]` in the UI just as it is in Rust:
 
-<img alt="The DMA map in the web UI, its sidebar listing fifo[0] through fifo[7] and chan[0] through chan[3] with their individual offsets." src="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-arrays-dark.png">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-arrays-dark.png">
+  <img alt="The DMA map in the web UI, its sidebar listing fifo[0] through fifo[7] and chan[0] through chan[3] with their individual offsets." src="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-arrays-light.png">
+</picture>
 
 
 **Several maps, one page.** Call `.add()` once per map; each gets a URL slug
