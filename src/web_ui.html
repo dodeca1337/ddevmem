@@ -56,6 +56,8 @@
     --tag-bg-ro: #4d5358; --tag-fg-ro: #dde1e6;
     --tag-bg-wo: #9f1853; --tag-fg-wo: #ffd6e8;
     --support-success: #42be65;
+    /* Carbon `chevron--down` 16, tinted to match --text-primary. */
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' width='16' height='16'%3E%3Cpath fill='%23f4f4f4' d='M8 11L3 6l.7-.7L8 9.6l4.3-4.3.7.7z'/%3E%3C/svg%3E");
   }
 
   [data-theme="g10"] {
@@ -92,6 +94,7 @@
     --tag-bg-ro: #dde1e6; --tag-fg-ro: #4d5358;
     --tag-bg-wo: #ffd6e8; --tag-fg-wo: #9f1853;
     --support-success: #24a148;
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' width='16' height='16'%3E%3Cpath fill='%23161616' d='M8 11L3 6l.7-.7L8 9.6l4.3-4.3.7.7z'/%3E%3C/svg%3E");
   }
 
   /* Carbon spacing scale (subset). All paddings/margins below reference
@@ -250,12 +253,18 @@
   .bf-set .bf-input { flex: 1 1 auto; width: auto; min-width: 0; }
   .bf-set > button { flex: 0 0 auto; }
 
+  /* `appearance: none` drops the native arrow, so the 16 px Carbon
+     chevron--down is supplied as a background image (--select-chevron,
+     recoloured per theme) in the space `padding-right` reserves for it.
+     Without it a <select> is indistinguishable from a text input. */
   select, select.bf-input {
     appearance: none;
     -webkit-appearance: none;
     -moz-appearance: none;
+    background-image: var(--select-chevron);
     background-repeat: no-repeat;
     background-position: right .75rem center;
+    background-size: 16px 16px;
     cursor: pointer;
     text-overflow: ellipsis;
     padding-right: 2rem;          /* 12 px chevron-edge + 16 px chevron + 4 px gap */
