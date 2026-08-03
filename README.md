@@ -424,6 +424,9 @@ pub fn clear_isr_parity(&mut self) {
 handing `f` the value as read and writing the result back verbatim. Reach for
 it when you want the unfiltered register, and mask the flags yourself.
 
+The [web UI](#web-ui) understands these kinds too, offering a *Clear* action
+for `w1c` flags instead of a value to set.
+
 ### Typed bitfields
 
 Adding `as <kind>` changes the getter's return type and the setter's argument
@@ -666,6 +669,18 @@ their variants, so nobody has to remember that parity 1 means even:
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-register-dark.png">
   <img alt="A single register card: the UART control register with its six bitfields, each showing bit positions, decoded value, a set control and its documentation." src="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-register-light.png">
+</picture>
+
+[Field-level access](#field-level-access) carries over: a `w1c` flag offers a
+*Clear* action rather than a value to set, a `ro` field offers no write control
+at all, and a `wo` field shows no value, because it cannot be read. The page's
+read-modify-write uses the same force-to-zero mask as the generated Rust, so
+adjusting a setting through the browser will not acknowledge a pending
+interrupt either.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-mixed-dark.png">
+  <img alt="A mixed-access register in the web UI: four write-1-to-clear flags with Clear buttons and W1C tags, above ordinary read-write fields with value inputs." src="https://raw.githubusercontent.com/dodeca1337/ddevmem/master/docs/ui-mixed-light.png">
 </picture>
 
 Register arrays are expanded element by element, so `fifo: [u32; 8]` is

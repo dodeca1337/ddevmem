@@ -178,6 +178,19 @@ def main():
                 clip_selector="#reg-uart-0",
             )
 
+        # Field-level access: the UART interrupt register, where w1c flags
+        # share a word with read-write configuration.
+        for theme in ("dark", "light"):
+            shot(
+                chrome,
+                f"ui-mixed-{theme}.png",
+                1440,
+                760,
+                theme,
+                "document.getElementById('reg-uart-12')"
+                ".scrollIntoView({block: 'start'});",
+            )
+
         # Register arrays: fifo[0..8] / chan[0..4] expanded in the sidebar.
         for theme in ("dark", "light"):
             shot(
