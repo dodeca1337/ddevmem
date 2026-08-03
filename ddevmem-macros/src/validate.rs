@@ -11,7 +11,7 @@ use std::fmt::Display;
 
 use proc_macro2::Span;
 
-use crate::ast::{Bitfield, FieldType, RegisterEntry, RegisterMap};
+use crate::ast::{Bitfield, FieldAccess, FieldType, RegisterEntry, RegisterMap};
 
 #[derive(Default)]
 struct ErrorSink {
@@ -150,6 +150,11 @@ fn validate_entry(
     if entry.access.can_read() && entry.access.can_write() {
         methods.claim(format!("modify_{reg}"), reg_span, sink);
     }
+    // `wo` registers with bitfields get a whole-register builder.
+    if entry.access == crate::ast::Access::Wo && !entry.bitfields.is_empty() {
+        methods.claim(format!("write_{reg}"), reg_span, sink);
+        types.claim(crate::expand::writer_type_name(map, entry), reg_span, sink);
+    }
 
     for bf in &entry.bitfields {
         validate_bitfield(entry, bf, methods, types, sink);
@@ -174,11 +179,40 @@ fn validate_bitfield(
         );
     }
 
-    if entry.access.can_read() {
+    // A field may narrow the register's access, never widen it.
+    match bf.access {
+        FieldAccess::Inherit => {}
+        FieldAccess::Ro if !entry.access.can_read() => sink.error(
+            field_span,
+            format!(
+                "`ro` field `{field}` cannot appear in the write-only register `{reg}`"
+            ),
+        ),
+        FieldAccess::Wo if !entry.access.can_write() => sink.error(
+            field_span,
+            format!(
+                "`wo` field `{field}` cannot appear in the read-only register `{reg}`"
+            ),
+        ),
+        FieldAccess::W1c if !entry.access.can_write() => sink.error(
+            field_span,
+            format!(
+                "`w1c` field `{field}` cannot appear in the read-only register `{reg}`: \
+                 clearing it requires a write"
+            ),
+        ),
+        _ => {}
+    }
+
+    if bf.access.can_read(entry.access) {
         methods.claim(format!("{reg}_{field}"), field_span, sink);
     }
-    if entry.access.can_write() {
-        methods.claim(format!("set_{reg}_{field}"), field_span, sink);
+    if bf.access.can_write(entry.access) {
+        let setter = match bf.access {
+            FieldAccess::W1c => format!("clear_{reg}_{field}"),
+            _ => format!("set_{reg}_{field}"),
+        };
+        methods.claim(setter, field_span, sink);
     }
 
     // Bit range sanity, when the positions are literals.

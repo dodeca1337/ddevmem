@@ -35,7 +35,9 @@ register_map! {
                 /// Master enable.
                 enable: 0 as bool,
                 /// Number of active channels (0–7).
-                nch: 1..=3 as u8
+                nch: 1..=3 as u8,
+                /// Hardware revision — reported by the block, never written.
+                ro rev: 24..=31 as u8
             },
         0x04 =>
             /// Status (read-only).
@@ -123,16 +125,23 @@ register_map! {
                 rx_count: 8..=11 as u8
             },
         0x0C =>
-            /// Interrupt status (write 1 to clear the corresponding bit).
+            /// Interrupt status and mask — the classic mixed-access register:
+            /// write-1-to-clear flags sharing a word with read-write
+            /// configuration. Changing `mask` must not acknowledge a pending
+            /// flag, which is what the `w1c` modifier guarantees.
             rw isr: u32 {
                 /// TX FIFO empty interrupt pending.
-                tx_empty: 0 as bool,
+                w1c tx_empty: 0 as bool,
                 /// RX byte received interrupt pending.
-                rx_byte: 1 as bool,
+                w1c rx_byte: 1 as bool,
                 /// Parity error interrupt pending.
-                parity:  2 as bool,
+                w1c parity: 2 as bool,
                 /// Frame error interrupt pending.
-                frame:   3 as bool
+                w1c frame: 3 as bool,
+                /// Master interrupt enable.
+                enable: 8 as bool,
+                /// Which sources may raise an interrupt.
+                mask: 12..=15 as u8
             },
         0x10 =>
             /// Command register (write-only). Writing triggers an action; the
@@ -291,6 +300,16 @@ async fn main() {
     uart.set_cr_parity(Parity::Even);
     uart.set_cr_stop(StopBits::One);
     uart.set_brd(115_200);
+
+    // Interrupt configuration lives in the same register as the pending
+    // flags. Setting `mask` writes the `w1c` bits as zero, so the two flags
+    // the "hardware" raised below stay pending and visible in the UI.
+    uart.set_isr_enable(true);
+    uart.set_isr_mask(0b1011);
+    uart.modify_isr(|v| v | 0b0011); // pretend two interrupts fired
+
+    // A write-only command register: several bits in one transaction.
+    uart.write_cmd(|w| w.tx_reset(true).rx_reset(true));
 
     adc.set_cr_enable(true);
     adc.set_cr_continuous(true);

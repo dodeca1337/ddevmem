@@ -17,7 +17,7 @@ use quote::{format_ident, quote, ToTokens};
 use syn::{Attribute, Ident, LitInt};
 
 use crate::ast::{
-    Access, Bitfield, ConstExpr, EnumDef, FieldType, RegisterEntry, RegisterMap,
+    Access, Bitfield, ConstExpr, EnumDef, FieldAccess, FieldType, RegisterEntry, RegisterMap,
 };
 
 pub fn expand(map: &RegisterMap) -> TokenStream {
@@ -197,18 +197,49 @@ impl FieldPos {
     }
 
     /// The mask shifted into position, for `__update`.
-    fn positioned_mask(&self) -> TokenStream {
+    fn positioned_mask(&self) -> Mask {
         match self {
             FieldPos::Literal { lo, width, .. } => {
-                let mask = hex(Self::mask_value(*width));
-                if *lo == 0 {
-                    quote!(#mask)
-                } else {
-                    let lo = dec(u64::from(*lo));
-                    quote!(#mask << #lo)
-                }
+                Mask::Lit(Self::mask_value(*width) << lo)
             }
-            FieldPos::Const { mask, .. } => quote!(Self::#mask),
+            FieldPos::Const { mask, .. } => Mask::Expr(quote!(Self::#mask)),
+        }
+    }
+}
+
+/// A bit mask, kept as a plain value while every contributing field had
+/// literal positions so that the generated code reads `0x107` rather than
+/// `A | B | C`.
+#[derive(Clone)]
+enum Mask {
+    Lit(u64),
+    Expr(TokenStream),
+}
+
+impl Mask {
+    fn is_empty(&self) -> bool {
+        matches!(self, Mask::Lit(0))
+    }
+
+    fn or(self, other: Mask) -> Mask {
+        match (self, other) {
+            (Mask::Lit(a), Mask::Lit(b)) => Mask::Lit(a | b),
+            (a, b) if a.is_empty() => b,
+            (a, b) if b.is_empty() => a,
+            (a, b) => {
+                let (a, b) = (a.tokens(), b.tokens());
+                Mask::Expr(quote!((#a | #b)))
+            }
+        }
+    }
+
+    fn tokens(&self) -> TokenStream {
+        match self {
+            Mask::Lit(value) => {
+                let lit = hex(*value);
+                quote!(#lit)
+            }
+            Mask::Expr(tokens) => tokens.clone(),
         }
     }
 }
@@ -478,8 +509,10 @@ fn expand_impl(map: &RegisterMap) -> TokenStream {
 
     let mut consts = TokenStream::new();
     let mut methods = TokenStream::new();
+    // Module-scope items (the whole-register writers of `wo` registers).
+    let mut items = TokenStream::new();
     for entry in &map.entries {
-        methods.extend(expand_entry(map, entry, &mut consts));
+        methods.extend(expand_entry(map, entry, &mut consts, &mut items));
     }
 
     let new = expand_new(map);
@@ -488,6 +521,8 @@ fn expand_impl(map: &RegisterMap) -> TokenStream {
     // No `unsafe impl Send/Sync` is emitted: the struct's only field is an
     // `Arc<DevMem>`, and `DevMem` is `Send + Sync`, so the auto traits apply.
     quote! {
+        #items
+
         impl #name {
             #consts
             #new
@@ -658,7 +693,12 @@ fn expand_helpers(map: &RegisterMap) -> TokenStream {
 
 // ─── Per-register methods ────────────────────────────────────────────────────
 
-fn expand_entry(map: &RegisterMap, entry: &RegisterEntry, consts: &mut TokenStream) -> TokenStream {
+fn expand_entry(
+    map: &RegisterMap,
+    entry: &RegisterEntry,
+    consts: &mut TokenStream,
+    items: &mut TokenStream,
+) -> TokenStream {
     let vis = &map.vis;
     let bus = &map.bus;
     let reg = &entry.name;
@@ -667,6 +707,21 @@ fn expand_entry(map: &RegisterMap, entry: &RegisterEntry, consts: &mut TokenStre
     let attrs = &entry.attrs;
     let offset = &entry.offset;
     let same_ty = entry.ty.kind == map.bus.kind;
+
+    // Bit positions are resolved for the whole register up front: the write
+    // mask of any one field depends on which *other* fields must be forced to
+    // zero during a read-modify-write.
+    let positions: Vec<FieldPos> = entry
+        .bitfields
+        .iter()
+        .map(|bf| field_pos(map, entry, bf, consts))
+        .collect();
+    let force_zero = entry
+        .bitfields
+        .iter()
+        .zip(&positions)
+        .filter(|(bf, _)| bf.access.forced_zero())
+        .fold(Mask::Lit(0), |acc, (_, pos)| acc.or(pos.positioned_mask()));
 
     let offset_fn = format_ident!("{reg}_offset");
     let address_fn = format_ident!("{reg}_address");
@@ -767,10 +822,17 @@ fn expand_entry(map: &RegisterMap, entry: &RegisterEntry, consts: &mut TokenStre
 
     // Modify (composed from the public getter and setter)
     if entry.access.can_read() && entry.access.can_write() {
-        let doc = docs(
-            attrs,
-            &format!("Volatile read-modify-write of `{element}` {at_offset}."),
-        );
+        let mut summary = format!("Volatile read-modify-write of `{element}` {at_offset}.");
+        if !force_zero.is_empty() {
+            summary.push_str(
+                " This is the raw escape hatch: `f` sees the value as read and its \
+                 result is written back verbatim, so the `w1c` and `wo` bits of this \
+                 register go back exactly as returned — acknowledging any flag that \
+                 happened to be pending. Prefer the per-field accessors, which force \
+                 those bits to zero.",
+            );
+        }
+        let doc = docs(attrs, &summary);
         let idx_pass = if entry.is_array() {
             quote!(idx,)
         } else {
@@ -787,31 +849,180 @@ fn expand_entry(map: &RegisterMap, entry: &RegisterEntry, consts: &mut TokenStre
     }
 
     // Bitfields
-    for bf in &entry.bitfields {
-        out.extend(expand_bitfield(map, entry, bf, &idx_param, &off, consts));
+    for (bf, pos) in entry.bitfields.iter().zip(&positions) {
+        out.extend(expand_bitfield(
+            map,
+            entry,
+            bf,
+            pos,
+            &force_zero,
+            &idx_param,
+            &off,
+        ));
+    }
+
+    // A write-only register cannot be updated field by field without zeroing
+    // everything else, so it also gets a builder that writes the whole
+    // register in one transaction.
+    if entry.access == Access::Wo && !entry.bitfields.is_empty() {
+        items.extend(expand_writer(map, entry, &positions));
+
+        let writer_ty = format_ident!("{}", writer_type_name(map, entry));
+        let write_fn = format_ident!("write_{reg}");
+        let summary = format!(
+            "Writes `{element}` {at_offset} in a single transaction. Fields the \
+             closure does not touch are written as zero."
+        );
+        let doc = docs(attrs, &summary);
+        out.extend(quote! {
+            #doc
+            #[inline(always)]
+            #vis fn #write_fn(&mut self #idx_param, f: impl FnOnce(#writer_ty) -> #writer_ty) {
+                self.__write(#off, f(#writer_ty(0)).0)
+            }
+        });
     }
 
     out
 }
 
+/// Name of the builder type generated for a write-only register's
+/// whole-register write (`UartRegs` + `cmd` → `UartRegsCmdWrite`).
+pub fn writer_type_name(map: &RegisterMap, entry: &RegisterEntry) -> String {
+    let mut pascal = String::new();
+    for part in entry.name.to_string().split('_').filter(|p| !p.is_empty()) {
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            pascal.extend(first.to_uppercase());
+            pascal.push_str(chars.as_str());
+        }
+    }
+    format!("{}{}Write", map.name, pascal)
+}
+
+/// The builder behind `write_<reg>`: a bare bus word plus one chainable
+/// method per writable field.
+fn expand_writer(map: &RegisterMap, entry: &RegisterEntry, positions: &[FieldPos]) -> TokenStream {
+    let vis = &map.vis;
+    let bus = &map.bus;
+    let writer_ty = format_ident!("{}", writer_type_name(map, entry));
+    let element = element_display(entry);
+
+    let mut methods = TokenStream::new();
+    for (bf, pos) in entry.bitfields.iter().zip(positions) {
+        if !bf.access.can_write(entry.access) {
+            continue;
+        }
+        let name = &bf.name;
+        let mask = pos.positioned_mask().tokens();
+        let bits = bits_display(bf);
+
+        if bf.access == FieldAccess::W1c {
+            let doc = docs(
+                &bf.attrs,
+                &format!("Requests a clear of {bits} by writing ones to it."),
+            );
+            methods.extend(quote! {
+                #doc
+                #[inline(always)]
+                #vis fn #name(mut self) -> Self {
+                    self.0 |= #mask;
+                    self
+                }
+            });
+        } else {
+            let (value_ty, bits_expr) = field_write_expr(map, entry, bf, pos);
+            let doc = docs(&bf.attrs, &format!("Sets {bits}."));
+            methods.extend(quote! {
+                #doc
+                #[inline(always)]
+                #vis fn #name(mut self, value: #value_ty) -> Self {
+                    self.0 = (self.0 & !#mask) | #bits_expr;
+                    self
+                }
+            });
+        }
+    }
+
+    let doc = format!(
+        "Builder for a whole-register write of `{element}`.\n\n\
+         Starts with every bit zero; each method sets one field. Obtained from \
+         the register map's `write_{}` method.",
+        entry.name
+    );
+    quote! {
+        #[doc = #doc]
+        #[derive(Debug, Clone, Copy)]
+        #vis struct #writer_ty(#bus);
+
+        impl #writer_ty {
+            #methods
+        }
+    }
+}
+
+/// The setter's value type and the expression that positions `value` into the
+/// field, in the bus domain.
+fn field_write_expr(
+    map: &RegisterMap,
+    entry: &RegisterEntry,
+    bf: &Bitfield,
+    pos: &FieldPos,
+) -> (TokenStream, TokenStream) {
+    let bus = &map.bus;
+    let ty = &entry.ty;
+    let same_ty = entry.ty.kind == map.bus.kind;
+
+    match &bf.ty {
+        FieldType::Raw => {
+            let value = if same_ty {
+                quote!(value)
+            } else {
+                quote!((value as #bus))
+            };
+            (quote!(#ty), pos.insert(value, true))
+        }
+        FieldType::Bool => (quote!(bool), pos.insert(quote!((value as #bus)), false)),
+        FieldType::Int(cast) => {
+            let value = if cast.kind == map.bus.kind {
+                quote!(value)
+            } else {
+                quote!((value as #bus))
+            };
+            (quote!(#cast), pos.insert(value, true))
+        }
+        FieldType::Enum(def) => {
+            let ename = &def.name;
+            let value = if same_ty {
+                quote!(value.to_raw())
+            } else {
+                quote!((value.to_raw() as #bus))
+            };
+            // Literal variant values were validated to fit the field.
+            let masked = !def.variants.iter().all(|v| v.value.value.is_some())
+                || matches!(pos, FieldPos::Const { .. });
+            (quote!(#ename), pos.insert(value, masked))
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn expand_bitfield(
     map: &RegisterMap,
     entry: &RegisterEntry,
     bf: &Bitfield,
+    pos: &FieldPos,
+    force_zero: &Mask,
     idx_param: &TokenStream,
     off: &TokenStream,
-    consts: &mut TokenStream,
 ) -> TokenStream {
     let vis = &map.vis;
-    let bus = &map.bus;
     let ty = &entry.ty;
     let reg = &entry.name;
     let field_attrs = &bf.attrs;
     let same_ty = entry.ty.kind == map.bus.kind;
 
     let getter = format_ident!("{}_{}", reg, bf.name);
-    let setter = format_ident!("set_{}_{}", reg, bf.name);
-    let pos = field_pos(map, entry, bf, consts);
 
     let element = element_display(entry);
     let bits = bits_display(bf);
@@ -850,42 +1061,9 @@ fn expand_bitfield(
         }
     };
 
-    // (setter value type, positioned bus-domain bits)
-    let (value_ty, bits_expr): (TokenStream, TokenStream) = match &bf.ty {
-        FieldType::Raw => {
-            let value = if same_ty {
-                quote!(value)
-            } else {
-                quote!((value as #bus))
-            };
-            (quote!(#ty), pos.insert(value, true))
-        }
-        FieldType::Bool => (quote!(bool), pos.insert(quote!((value as #bus)), false)),
-        FieldType::Int(cast) => {
-            let value = if cast.kind == map.bus.kind {
-                quote!(value)
-            } else {
-                quote!((value as #bus))
-            };
-            (quote!(#cast), pos.insert(value, true))
-        }
-        FieldType::Enum(def) => {
-            let ename = &def.name;
-            let value = if same_ty {
-                quote!(value.to_raw())
-            } else {
-                quote!((value.to_raw() as #bus))
-            };
-            // Literal variant values were validated to fit the field.
-            let masked = !def.variants.iter().all(|v| v.value.value.is_some())
-                || matches!(pos, FieldPos::Const { .. });
-            (quote!(#ename), pos.insert(value, masked))
-        }
-    };
-
     let mut out = TokenStream::new();
 
-    if entry.access.can_read() {
+    if bf.access.can_read(entry.access) {
         let doc = docs(field_attrs, &format!("Reads {bits} of `{element}`."));
         out.extend(quote! {
             #doc
@@ -896,31 +1074,86 @@ fn expand_bitfield(
         });
     }
 
-    if entry.access.can_write() {
+    if !bf.access.can_write(entry.access) {
+        return out;
+    }
+
+    // Sentence appended whenever a read-modify-write has to suppress bits
+    // belonging to *other* fields.
+    let others_forced = if force_zero.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " The `w1c` and `wo` bits of `{}` are written as zero, so no flag is \
+             acknowledged and no command re-triggered.",
+            entry.name
+        )
+    };
+    let field_mask = pos.positioned_mask();
+
+    if bf.access == FieldAccess::W1c {
+        let clear_fn = format_ident!("clear_{}_{}", reg, bf.name);
+        let mask_tokens = field_mask.tokens();
         let (summary, body) = if entry.access.can_read() {
-            let mask = pos.positioned_mask();
+            let keep = force_zero.clone().tokens();
             (
-                format!("Writes {bits} of `{element}` via read-modify-write; the other bits are preserved."),
-                quote!(self.__update(#off, #mask, #bits_expr)),
+                format!(
+                    "Clears {bits} of `{element}` by writing ones to it \
+                     (write-1-to-clear).{others_forced}"
+                ),
+                quote!(self.__update(#off, #keep, #mask_tokens)),
             )
         } else {
             (
                 format!(
-                    "Writes {bits} of `{element}`. The register is write-only, so a \
-                     read-modify-write is impossible: all other bits are written as zero."
+                    "Clears {bits} of `{element}` by writing ones to it \
+                     (write-1-to-clear). The register is write-only, so every other \
+                     bit is written as zero."
                 ),
-                quote!(self.__write(#off, #bits_expr)),
+                quote!(self.__write(#off, #mask_tokens)),
             )
         };
         let doc = docs(field_attrs, &summary);
         out.extend(quote! {
             #doc
             #[inline(always)]
-            #vis fn #setter(&mut self #idx_param, value: #value_ty) {
+            #vis fn #clear_fn(&mut self #idx_param) {
                 #body
             }
         });
+        return out;
     }
+
+    let setter = format_ident!("set_{}_{}", reg, bf.name);
+    let (value_ty, bits_expr) = field_write_expr(map, entry, bf, pos);
+    let (summary, body) = if entry.access.can_read() {
+        let mask = force_zero.clone().or(field_mask).tokens();
+        (
+            format!(
+                "Writes {bits} of `{element}` via read-modify-write; the other bits \
+                 are preserved.{others_forced}"
+            ),
+            quote!(self.__update(#off, #mask, #bits_expr)),
+        )
+    } else {
+        (
+            format!(
+                "Writes {bits} of `{element}`. The register is write-only, so a \
+                 read-modify-write is impossible: all other bits are written as \
+                 zero. Use `write_{}` to set several fields in one transaction.",
+                entry.name
+            ),
+            quote!(self.__write(#off, #bits_expr)),
+        )
+    };
+    let doc = docs(field_attrs, &summary);
+    out.extend(quote! {
+        #doc
+        #[inline(always)]
+        #vis fn #setter(&mut self #idx_param, value: #value_ty) {
+            #body
+        }
+    });
 
     out
 }

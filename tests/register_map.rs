@@ -206,6 +206,144 @@ fn write_only_bitfield_writes_field_and_zeroes_rest() {
     assert_eq!(mem.read::<u32>(0x08), Some(1));
 }
 
+// ─── Per-field access ────────────────────────────────────────────────────────
+
+register_map! {
+    /// The pattern the field-level access kinds exist for: RW configuration
+    /// sharing a register with write-1-to-clear interrupt flags.
+    pub unsafe map Isr (u32) {
+        0x00 => rw cr: u32 {
+            enable: 0 as bool,
+            mode: 1..=2 as u8,
+            ro  locked: 3 as bool,
+            w1c overrun: 8 as bool,
+            w1c error: 9 as bool,
+            wo  trigger: 16 as bool
+        },
+        0x04 => wo ack: u32 {
+            w1c done: 0 as bool,
+            channel: 4..=6 as u8
+        }
+    }
+}
+
+#[test]
+fn writing_a_field_does_not_acknowledge_pending_w1c_flags() {
+    let mem = devmem(256);
+    let mut regs = unsafe { Isr::new(mem.clone()).unwrap() };
+
+    // Hardware raised both flags while we were configuring.
+    mem.write::<u32>(0x00, 0b11 << 8 | 0b101).unwrap();
+
+    regs.set_cr_mode(3);
+
+    // The flags must go back as zero — writing them back as read would
+    // acknowledge them — while ordinary bits are preserved.
+    let written = mem.read::<u32>(0x00).unwrap();
+    assert_eq!(written & (0b11 << 8), 0, "w1c bits must be written as zero");
+    assert_eq!(written & 1, 1, "enable preserved");
+    assert_eq!(regs.cr_mode(), 3);
+}
+
+#[test]
+fn wo_field_is_not_re_triggered_by_a_neighbouring_write() {
+    let mem = devmem(256);
+    let mut regs = unsafe { Isr::new(mem.clone()).unwrap() };
+
+    // The trigger bit still reads as 1 (command in flight).
+    mem.write::<u32>(0x00, 1 << 16).unwrap();
+    regs.set_cr_enable(true);
+
+    assert_eq!(mem.read::<u32>(0x00).unwrap() & (1 << 16), 0);
+}
+
+#[test]
+fn clear_acknowledges_only_its_own_flag() {
+    let mem = devmem(256);
+    let mut regs = unsafe { Isr::new(mem.clone()).unwrap() };
+
+    mem.write::<u32>(0x00, 0b11 << 8 | 0b101).unwrap();
+    assert!(regs.cr_overrun());
+    assert!(regs.cr_error());
+
+    regs.clear_cr_overrun();
+
+    let written = mem.read::<u32>(0x00).unwrap();
+    assert_eq!(written & (1 << 8), 1 << 8, "overrun acknowledged");
+    assert_eq!(written & (1 << 9), 0, "error left pending");
+    assert_eq!(written & 0b101, 0b101, "configuration preserved");
+}
+
+#[test]
+fn clear_on_a_write_only_register_zeroes_everything_else() {
+    let mem = devmem(256);
+    let mut regs = unsafe { Isr::new(mem.clone()).unwrap() };
+
+    mem.write::<u32>(0x04, 0xFFFF_FFFF).unwrap();
+    regs.clear_ack_done();
+    assert_eq!(mem.read::<u32>(0x04), Some(1));
+}
+
+#[test]
+fn ro_field_is_readable_and_reflects_memory() {
+    let mem = devmem(256);
+    let regs = unsafe { Isr::new(mem.clone()).unwrap() };
+
+    mem.write::<u32>(0x00, 1 << 3).unwrap();
+    assert!(regs.cr_locked());
+}
+
+// ─── Whole-register writer for `wo` registers ────────────────────────────────
+
+register_map! {
+    pub unsafe map Cmd (u32) {
+        0x00 => wo cmd: u32 {
+            tx_reset: 0 as bool,
+            rx_reset: 1 as bool,
+            channel: 4..=6 as u8,
+            mode: 8..=9 as enum CmdMode {
+                Idle = 0,
+                Run = 1,
+                Halt = 2,
+            }
+        },
+        0x04 => wo trig: [u32; 2] {
+            fire: 0 as bool
+        }
+    }
+}
+
+#[test]
+fn writer_sets_several_fields_in_one_transaction() {
+    let mem = devmem(256);
+    let mut regs = unsafe { Cmd::new(mem.clone()).unwrap() };
+
+    regs.write_cmd(|w| w.tx_reset(true).channel(5).mode(CmdMode::Run));
+
+    assert_eq!(mem.read::<u32>(0x00), Some(1 | 5 << 4 | 1 << 8));
+}
+
+#[test]
+fn writer_starts_from_zero_every_time() {
+    let mem = devmem(256);
+    let mut regs = unsafe { Cmd::new(mem.clone()).unwrap() };
+
+    mem.write::<u32>(0x00, 0xFFFF_FFFF).unwrap();
+    regs.write_cmd(|w| w.rx_reset(true));
+
+    assert_eq!(mem.read::<u32>(0x00), Some(0b10));
+}
+
+#[test]
+fn writer_works_on_array_registers() {
+    let mem = devmem(256);
+    let mut regs = unsafe { Cmd::new(mem.clone()).unwrap() };
+
+    regs.write_trig(1, |w| w.fire(true));
+    assert_eq!(mem.read::<u32>(0x04), Some(0));
+    assert_eq!(mem.read::<u32>(0x08), Some(1));
+}
+
 // ─── Register arrays ─────────────────────────────────────────────────────────
 
 register_map! {

@@ -116,10 +116,69 @@ pub mod web;
 ///
 /// On **`wo` registers** a read-modify-write is impossible, so a bitfield
 /// setter writes the field value with **all other bits zero** — the usual
-/// semantics of self-clearing command registers.
+/// semantics of self-clearing command registers. Such a register also gets a
+/// `write_<name>` builder for setting several fields in one transaction:
+///
+/// ```rust,no_run
+/// # use ddevmem::register_map;
+/// register_map! {
+///     pub unsafe map Uart (u32) {
+///         0x10 => wo cmd: u32 {
+///             tx_reset: 0 as bool,
+///             rx_reset: 1 as bool,
+///             channel: 4..=6 as u8
+///         }
+///     }
+/// }
+/// # fn use_it(uart: &mut Uart) {
+/// uart.write_cmd(|w| w.tx_reset(true).channel(3));
+/// # }
+/// ```
 ///
 /// Bit positions may be integer literals or parenthesized const expressions
 /// (`field: (BASE)..=(BASE + 3)`).
+///
+/// ## Field-level access
+///
+/// A field may narrow the register's access with a modifier before its name:
+///
+/// | Modifier | Effect |
+/// |----------|--------|
+/// | `ro`  | Readable, never written — no setter is generated. |
+/// | `wo`  | Writable, never read — no getter is generated. |
+/// | `w1c` | Write-1-to-clear: `clear_<reg>_<field>()` replaces the setter. |
+///
+/// This exists for the very common register that mixes read-write
+/// configuration with write-1-to-clear interrupt flags. A plain
+/// read-modify-write over such a register writes a pending flag back as it
+/// was read, which on `w1c` hardware **acknowledges it by accident**. Marking
+/// the flags makes every generated setter write those bits as zero instead:
+///
+/// ```rust,no_run
+/// # use ddevmem::register_map;
+/// register_map! {
+///     pub unsafe map Uart (u32) {
+///         0x0C => rw isr: u32 {
+///             /// Pending: RX byte received.
+///             w1c rx_byte: 0 as bool,
+///             /// Pending: parity error.
+///             w1c parity: 1 as bool,
+///             /// Which sources may raise an interrupt.
+///             mask: 8..=11 as u8,
+///             /// Silicon revision.
+///             ro rev: 24..=31 as u8
+///         }
+///     }
+/// }
+/// # fn use_it(uart: &mut Uart) {
+/// uart.set_isr_mask(0b1011);  // flags written as zero — none acknowledged
+/// uart.clear_isr_parity();    // acknowledges parity only, keeps the mask
+/// # }
+/// ```
+///
+/// The escape hatch `modify_<reg>` stays a raw read-modify-write: it hands
+/// `f` the value as read and writes the result back verbatim, so `w1c` and
+/// `wo` bits are *not* suppressed there.
 ///
 /// ## Typed bitfields
 ///
@@ -167,7 +226,9 @@ pub mod web;
 ///
 /// For a bitfield `enable` on `cr`, `cr_enable()` and `set_cr_enable(value)`
 /// are generated analogously; with an `as` suffix the value type becomes the
-/// specified one. Array accessors take a leading `idx: usize` parameter.
+/// specified one. A `w1c` field gets `clear_cr_enable()` instead of a setter,
+/// a `ro` field gets no setter, and a `wo` field gets no getter. Array
+/// accessors take a leading `idx: usize` parameter.
 ///
 /// The struct's rustdoc includes a generated register summary table, and all
 /// `/// ...` comments (on the map, registers, and bitfields) are forwarded to
@@ -178,10 +239,11 @@ pub mod web;
 ///
 /// Misaligned offsets, bit ranges that exceed the register type, `as bool`
 /// on multi-bit fields, enum values that don't fit their field, casts
-/// narrower than the field, and name collisions between generated methods
-/// are reported as compile errors pointing at the offending token. Checks
-/// that depend on the target (`usize` widths, non-literal expressions) are
-/// enforced by generated `const` assertions.
+/// narrower than the field, field access that widens the register's own
+/// (a `w1c` field in a `ro` register, say), and name collisions between
+/// generated methods are reported as compile errors pointing at the
+/// offending token. Checks that depend on the target (`usize` widths,
+/// non-literal expressions) are enforced by generated `const` assertions.
 ///
 /// # Safety
 ///

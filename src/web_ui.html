@@ -55,6 +55,7 @@
     --tag-bg-rw: #0043ce; --tag-fg-rw: #d0e2ff;
     --tag-bg-ro: #4d5358; --tag-fg-ro: #dde1e6;
     --tag-bg-wo: #9f1853; --tag-fg-wo: #ffd6e8;
+    --tag-bg-w1c: #005d5d; --tag-fg-w1c: #9ef0f0;   /* Teal — write-1-to-clear */
     --support-success: #42be65;
     /* Carbon `chevron--down` 16, tinted to match --text-primary. */
     --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' width='16' height='16'%3E%3Cpath fill='%23f4f4f4' d='M8 11L3 6l.7-.7L8 9.6l4.3-4.3.7.7z'/%3E%3C/svg%3E");
@@ -93,6 +94,7 @@
     --tag-bg-rw: #d0e2ff; --tag-fg-rw: #0043ce;
     --tag-bg-ro: #dde1e6; --tag-fg-ro: #4d5358;
     --tag-bg-wo: #ffd6e8; --tag-fg-wo: #9f1853;
+    --tag-bg-w1c: #9ef0f0; --tag-fg-w1c: #005d5d;
     --support-success: #24a148;
     --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' width='16' height='16'%3E%3Cpath fill='%23161616' d='M8 11L3 6l.7-.7L8 9.6l4.3-4.3.7.7z'/%3E%3C/svg%3E");
   }
@@ -223,6 +225,10 @@
   .badge-rw { background: var(--tag-bg-rw); color: var(--tag-fg-rw); }
   .badge-ro { background: var(--tag-bg-ro); color: var(--tag-fg-ro); }
   .badge-wo { background: var(--tag-bg-wo); color: var(--tag-fg-wo); }
+  .badge-w1c { background: var(--tag-bg-w1c); color: var(--tag-fg-w1c); }
+  /* Marks a cell that carries no value: a write-only field's reading, or the
+     write control of a read-only field. */
+  .bf-na { color: var(--text-placeholder); font-size: .75rem; }
 
   /* Text input — Carbon style: square, bottom border, focus inset outline */
   input[type="text"], input:not([type]), select, .bf-input {
@@ -687,13 +693,6 @@ function extractBits(val, lo, hi) {
   return (v >> BigInt(lo)) & mask;
 }
 
-function setBits(oldVal, lo, hi, newFieldVal) {
-  const v = BigInt(oldVal);
-  const width = BigInt(hi - lo + 1);
-  const mask = (1n << width) - 1n;
-  return (v & ~(mask << BigInt(lo))) | ((BigInt(newFieldVal) & mask) << BigInt(lo));
-}
-
 function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
@@ -801,20 +800,35 @@ function renderAll() {
         for (const bf of reg.bitfields) {
           const bits = bf.lo === bf.hi ? '' + bf.lo : bf.hi + ':' + bf.lo;
           const bfid = uid + '-' + bf.name;
-          html += '<tr><td>' + escHtml(bf.name) + '</td><td>' + bits + '</td>'
-                + '<td class="bf-val" id="bf-' + bfid + '">—</td>';
+          // A field may narrow the register's access. `wo` fields cannot be
+          // read back, `ro` fields offer no write control, and `w1c` fields
+          // are acknowledged with a Clear action rather than a value.
+          const acc = bf.access || reg.access;
+          const tag = acc !== reg.access
+            ? ' <span class="badge badge-' + acc + '">' + acc + '</span>' : '';
+          html += '<tr><td>' + escHtml(bf.name) + tag + '</td><td>' + bits + '</td>'
+                + (acc === 'wo'
+                    ? '<td class="bf-val bf-na" title="write-only">—</td>'
+                    : '<td class="bf-val" id="bf-' + bfid + '">—</td>');
           if (reg.access !== 'ro') {
             html += '<td><div class="bf-set">';
-            if (bf.variants && bf.variants.length > 0) {
-              html += '<select class="bf-input" id="bfi-' + bfid + '">';
-              for (const v of bf.variants) {
-                html += '<option value="' + v.value + '">' + escHtml(v.name) + ' (' + v.value + ')</option>';
-              }
-              html += '</select>';
+            if (acc === 'ro') {
+              html += '<span class="bf-na">read-only</span>';
+            } else if (acc === 'w1c') {
+              html += '<button class="btn-secondary" onclick="clearBitfield(\'' + map.slug + '\',' + reg.offset + ',\'' + bf.name + '\',' + reg.width + ')">Clear</button>';
             } else {
-              html += '<input class="bf-input" id="bfi-' + bfid + '" placeholder="val">';
+              if (bf.variants && bf.variants.length > 0) {
+                html += '<select class="bf-input" id="bfi-' + bfid + '">';
+                for (const v of bf.variants) {
+                  html += '<option value="' + v.value + '">' + escHtml(v.name) + ' (' + v.value + ')</option>';
+                }
+                html += '</select>';
+              } else {
+                html += '<input class="bf-input" id="bfi-' + bfid + '" placeholder="val">';
+              }
+              html += '<button onclick="writeBitfield(\'' + map.slug + '\',' + reg.offset + ',\'' + bf.name + '\',' + reg.width + ')">Set</button>';
             }
-            html += '<button onclick="writeBitfield(\'' + map.slug + '\',' + reg.offset + ',' + bf.lo + ',' + bf.hi + ',\'' + bf.name + '\',' + reg.width + ')">Set</button></div></td>';
+            html += '</div></td>';
           }
           html += '<td class="bf-doc">' + escHtml(bf.doc) + '</td></tr>';
         }
@@ -1050,23 +1064,79 @@ async function writeReg(slug, offset, width) {
   }
 }
 
-async function writeBitfield(slug, offset, lo, hi, name, width) {
+function fieldMask(bf) {
+  const width = BigInt(bf.hi - bf.lo + 1);
+  return ((1n << width) - 1n) << BigInt(bf.lo);
+}
+
+/*
+ * Bits that any read-modify-write must write as zero: writing a `w1c` bit
+ * back as it was read would acknowledge a pending flag by accident, and
+ * writing a `wo` bit back would re-trigger it. Mirrors the mask the
+ * register_map! macro bakes into the generated setters.
+ */
+function forceZeroMask(reg) {
+  let mask = 0n;
+  for (const bf of reg.bitfields) {
+    const acc = bf.access || reg.access;
+    if (acc === 'w1c' || acc === 'wo') mask |= fieldMask(bf);
+  }
+  return mask;
+}
+
+function findField(slug, offset, name) {
   const map = getMap(slug);
-  if (!map) return;
-  const uid = slug + '-' + offset;
-  const inp = $('bfi-' + uid + '-' + name);
-  const st = $('st-' + uid);
-  if (!inp) return;
+  if (!map) return null;
+  const reg = map.info.registers.find(r => r.offset === offset);
+  const bf = reg && reg.bitfields.find(b => b.name === name);
+  return bf ? { map, reg, bf } : null;
+}
+
+/* Applies `compute(oldValue)` to a register and writes the result back.
+   Write-only registers cannot be read, so they start from zero — exactly
+   what the generated Rust setters do. */
+async function updateField(slug, offset, name, width, status, compute) {
+  const found = findField(slug, offset, name);
+  if (!found) return;
+  const { map, reg } = found;
+  const st = $('st-' + slug + '-' + offset);
   try {
-    const fieldVal = parseUserValue(inp.value);
-    const resp = await api(map.apiPrefix + '/read', { offset });
-    const newVal = setBits(respValue(resp), lo, hi, fieldVal);
-    await api(map.apiPrefix + '/write', { offset, value: wireValue(newVal) });
-    if (st) st.textContent = name + ' updated';
-    await readReg(slug, offset, width);
+    let old = 0n;
+    if (reg.access !== 'wo') {
+      old = respValue(await api(map.apiPrefix + '/read', { offset }));
+    }
+    const value = compute(old, found.bf, reg);
+    await api(map.apiPrefix + '/write', { offset, value: wireValue(value) });
+    if (st) st.textContent = status;
+    if (reg.access !== 'wo') await readReg(slug, offset, width);
   } catch (e) {
     if (st) st.textContent = e.message;
   }
+}
+
+async function writeBitfield(slug, offset, name, width) {
+  const found = findField(slug, offset, name);
+  if (!found) return;
+  const inp = $('bfi-' + slug + '-' + offset + '-' + name);
+  if (!inp) return;
+  const fieldVal = (() => {
+    try { return parseUserValue(inp.value); } catch (e) { return e; }
+  })();
+  if (fieldVal instanceof Error) {
+    const st = $('st-' + slug + '-' + offset);
+    if (st) st.textContent = fieldVal.message;
+    return;
+  }
+  return updateField(slug, offset, name, width, name + ' updated', (old, bf, reg) => {
+    const mask = fieldMask(bf);
+    const keep = old & ~(forceZeroMask(reg) | mask);
+    return keep | ((fieldVal << BigInt(bf.lo)) & mask);
+  });
+}
+
+async function clearBitfield(slug, offset, name, width) {
+  return updateField(slug, offset, name, width, name + ' cleared', (old, bf, reg) =>
+    (old & ~forceZeroMask(reg)) | fieldMask(bf));
 }
 
 async function refreshAll() {

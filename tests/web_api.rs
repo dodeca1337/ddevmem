@@ -32,7 +32,16 @@ register_map! {
             },
         0x04 => ro sr: u32,
         0x08 => wo cmd: u32,
-        0x10 => rw fifo: [u32; 2]
+        0x10 => rw fifo: [u32; 2],
+        // 0x18 is deliberately left unmapped — `respects_declared_offsets_and_access`
+        // uses it to check that the fifo array does not extend past its length.
+        0x20 =>
+            /// Mixed-access: a w1c flag next to rw configuration.
+            rw isr: u32 {
+                w1c pending: 0 as bool,
+                ro rev: 8..=15 as u8,
+                mask: 16..=19 as u8
+            }
     }
 }
 
@@ -105,7 +114,7 @@ async fn info_describes_registers_and_expands_arrays() {
 
     let registers = body["registers"].as_array().unwrap();
     let names: Vec<_> = registers.iter().map(|r| r["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["cr", "sr", "cmd", "fifo[0]", "fifo[1]"]);
+    assert_eq!(names, ["cr", "sr", "cmd", "fifo[0]", "fifo[1]", "isr"]);
 
     let cr = &registers[0];
     assert_eq!(cr["access"], "rw");
@@ -125,6 +134,22 @@ async fn info_describes_registers_and_expands_arrays() {
     assert_eq!(bitfields[1]["variants"].as_array().unwrap().len(), 3);
 
     assert_eq!(registers[4]["offset"], 0x14);
+
+    // A field's own access is reported so the UI can offer Clear instead of
+    // Set, and hide the write control of a read-only field.
+    let isr = &registers[5];
+    let access: Vec<_> = isr["bitfields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["name"].as_str().unwrap(), b["access"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        access,
+        [("pending", "w1c"), ("rev", "ro"), ("mask", "rw")]
+    );
+    // Fields without a modifier report the register's own kind.
+    assert_eq!(registers[0]["bitfields"][0]["access"], "rw");
 }
 
 #[tokio::test]

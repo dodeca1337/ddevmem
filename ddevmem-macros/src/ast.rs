@@ -250,9 +250,53 @@ impl RegisterEntry {
     }
 }
 
+/// Access modifier on an individual bitfield, narrowing the register's own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FieldAccess {
+    /// No modifier: the field follows the register's access kind.
+    Inherit,
+    /// `ro` — readable but never written; no setter is generated.
+    Ro,
+    /// `wo` — writable but never read; no getter is generated.
+    Wo,
+    /// `w1c` — write-1-to-clear; `clear_*` replaces `set_*`.
+    W1c,
+}
+
+impl FieldAccess {
+    pub fn can_read(self, register: Access) -> bool {
+        register.can_read() && self != FieldAccess::Wo
+    }
+
+    pub fn can_write(self, register: Access) -> bool {
+        register.can_write() && self != FieldAccess::Ro
+    }
+
+    /// Whether the field's bits must be written as zero by any
+    /// read-modify-write that is not deliberately targeting them.
+    ///
+    /// Writing back a `w1c` bit that happens to read as 1 would acknowledge
+    /// the flag by accident; writing back a `wo` bit would re-trigger it.
+    pub fn forced_zero(self) -> bool {
+        matches!(self, FieldAccess::Wo | FieldAccess::W1c)
+    }
+
+    /// Name of the effective access kind, for the web UI metadata.
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    pub fn as_str(self, register: Access) -> &'static str {
+        match self {
+            FieldAccess::Inherit => register.as_str(),
+            FieldAccess::Ro => "ro",
+            FieldAccess::Wo => "wo",
+            FieldAccess::W1c => "w1c",
+        }
+    }
+}
+
 /// A named bit range within a register.
 pub struct Bitfield {
     pub attrs: Vec<Attribute>,
+    pub access: FieldAccess,
     pub name: Ident,
     /// Low bit index, inclusive.
     pub lo: ConstExpr,
@@ -365,6 +409,27 @@ impl Parse for RegisterEntry {
 impl Parse for Bitfield {
     fn parse(input: ParseStream) -> Result<Self> {
         let attrs = input.call(Attribute::parse_outer)?;
+
+        // An access modifier is only a modifier when a second identifier
+        // follows it — `ro: 0` declares a field genuinely named `ro`.
+        let access = if input.peek(Ident) && input.peek2(Ident) {
+            let ident: Ident = input.parse()?;
+            match ident.to_string().as_str() {
+                "ro" => FieldAccess::Ro,
+                "wo" => FieldAccess::Wo,
+                "w1c" => FieldAccess::W1c,
+                _ => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "expected a field name, or one of the access modifiers \
+                         `ro`, `wo`, `w1c`",
+                    ))
+                }
+            }
+        } else {
+            FieldAccess::Inherit
+        };
+
         let name: Ident = input.parse()?;
         input.parse::<Token![:]>()?;
 
@@ -421,6 +486,7 @@ impl Parse for Bitfield {
 
         Ok(Bitfield {
             attrs,
+            access,
             name,
             lo,
             hi,

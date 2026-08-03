@@ -129,12 +129,15 @@ fn spec_tokens(entry: &RegisterEntry) -> TokenStream {
             }
         };
 
+        let access = bf.access.as_str(entry.access);
+
         quote! {
             ::ddevmem::web::spec::Bitfield {
                 name: #bf_name,
                 doc: #bf_doc,
                 lo: #lo,
                 hi: #hi,
+                access: #access,
                 type_name: #type_name,
                 variants: #variants,
             }

@@ -226,7 +226,8 @@ ENTRY   := OFFSET "=>" ATTR* ACCESS NAME ":" TYPE ( "{" FIELD "," … ,? "}" )?
 ACCESS  := "rw" | "ro" | "wo"
 TYPE    := INT | "[" INT ";" LEN "]"
 
-FIELD   := ATTR* NAME ":" BITS ( "as" KIND )?
+FIELD   := ATTR* FIELD_ACCESS? NAME ":" BITS ( "as" KIND )?
+FIELD_ACCESS := "ro" | "wo" | "w1c"
 BITS    := POS                     // single bit
          | POS "..=" POS           // inclusive range
          | POS ".." POS            // exclusive upper bound
@@ -332,7 +333,96 @@ all, are preserved. There is no need to declare reserved gaps.
 On a `wo` register a read-modify-write is impossible (reading is not allowed,
 and on hardware often meaningless), so a bitfield setter writes its field with
 **all other bits zero**. That matches how self-clearing command registers
-behave: `set_cmd_reset(true)` issues "reset, nothing else".
+behave: `set_cmd_reset(true)` issues "reset, nothing else". To raise several
+bits in one transaction, such a register also gets a `write_<name>` builder:
+
+```rust
+use std::sync::Arc;
+use ddevmem::{register_map, DevMem};
+
+register_map! {
+    pub unsafe map Uart (u32) {
+        0x10 => wo cmd: u32 {
+            tx_reset: 0 as bool,
+            rx_reset: 1 as bool,
+            channel: 4..=6 as u8
+        }
+    }
+}
+
+let devmem = unsafe { DevMem::new(0x4000_0000, None) }.unwrap();
+let mut uart = unsafe { Uart::new(Arc::new(devmem)) }.unwrap();
+
+uart.set_cmd_tx_reset(true);                     // one bit, everything else zero
+uart.write_cmd(|w| w.tx_reset(true).channel(3)); // several fields, one write
+```
+
+### Field-level access
+
+Real registers rarely have one access kind throughout. The common shape is
+read-write configuration sharing a word with **write-1-to-clear** interrupt
+flags, and it is a trap: an ordinary read-modify-write reads a pending flag as
+`1` and writes it straight back, which on `w1c` hardware means *acknowledge*.
+The interrupt disappears and nothing in the code says so.
+
+A modifier before the field name narrows the register's access and closes
+that hole:
+
+| Modifier | Effect                                                                    |
+| -------- | ------------------------------------------------------------------------- |
+| `ro`     | Readable, never written — no setter is generated.                         |
+| `wo`     | Writable, never read — no getter is generated.                            |
+| `w1c`    | Write-1-to-clear — `clear_<reg>_<field>()` replaces the setter.           |
+
+`w1c` and `wo` fields join a per-register mask of bits that **every** generated
+setter writes as zero, so touching one field can neither acknowledge a flag nor
+re-trigger a command:
+
+```rust
+use std::sync::Arc;
+use ddevmem::{register_map, DevMem};
+
+register_map! {
+    pub unsafe map Uart (u32) {
+        0x0C =>
+            /// Interrupt status and mask.
+            rw isr: u32 {
+                /// Pending: RX byte received.
+                w1c rx_byte: 0 as bool,
+                /// Pending: parity error.
+                w1c parity: 1 as bool,
+                /// Which sources may raise an interrupt.
+                mask: 8..=11 as u8,
+                /// Silicon revision, reported by the block.
+                ro rev: 24..=31 as u8
+            }
+    }
+}
+
+let devmem = unsafe { DevMem::new(0x4000_0000, None) }.unwrap();
+let mut uart = unsafe { Uart::new(Arc::new(devmem)) }.unwrap();
+
+uart.set_isr_mask(0b1011);  // flags written as zero — nothing acknowledged
+uart.clear_isr_parity();    // acknowledges parity alone, mask untouched
+let _ = uart.isr_rev();     // readable; no setter exists
+```
+
+The expansion makes the mask explicit. For the map above:
+
+```rust,ignore
+pub fn set_isr_mask(&mut self, value: u8) {
+    self.__update(0x0C, 0xF03, ((value as u32) & 0xF) << 8)
+    //                  ^^^^^ the two flag bits plus the field's own 0xF00
+}
+pub fn clear_isr_parity(&mut self) {
+    self.__update(0x0C, 0x3, 0x2)
+    //                  ^^^  ^^^ acknowledge bit 1, leave bit 0 pending
+}
+```
+
+`modify_<reg>` deliberately stays outside this: it is the raw escape hatch,
+handing `f` the value as read and writing the result back verbatim. Reach for
+it when you want the unfiltered register, and mask the flags yourself.
 
 ### Typed bitfields
 
@@ -461,6 +551,8 @@ For a map named `Regs` with a register `cr` (type `u32`) and a bitfield `en`:
 | `modify_cr(f)`              | `fn(&mut self, impl FnOnce(u32) -> u32)`          | `rw`                   |
 | `cr_en()`                   | `fn(&self) -> u32`                                | `rw`, `ro`             |
 | `set_cr_en(value)`          | `fn(&mut self, u32)`                              | `rw`, `wo`             |
+| `clear_cr_en()`             | `fn(&mut self)`                                   | `w1c` fields           |
+| `write_cr(f)`               | `fn(&mut self, impl FnOnce(W) -> W)`              | `wo` with bitfields    |
 
 For an array register `fifo: [u32; N]` every accessor gains a leading
 `idx: usize` parameter (`fifo(idx)`, `set_fifo(idx, value)`,
@@ -502,6 +594,8 @@ pointing at the token at fault:
 | `h: 0..=2 as bool`                                     | `as bool` requires a single-bit field, but `h` spans 3 bits             |
 | `i: 0..=9 as u8`                                       | cast type `u8` is narrower than the 10-bit field `i`                    |
 | `e: 3..=4 as enum E { X = 9 }`                         | variant value `0x9` does not fit in the 2-bit field `e`                 |
+| `w1c flag: 0` in a `ro` register                       | `w1c` field `flag` cannot appear in the read-only register `sr`: clearing it requires a write |
+| `ro status: 0` in a `wo` register                      | `ro` field `status` cannot appear in the write-only register `cmd`      |
 | Two registers named `a`                                | this declaration generates a method named `a`, which an earlier one also generates |
 | `rw d: [u32; 0]`                                       | register array length must be at least 1                                |
 | Missing comma between entries                          | expected `,`                                                            |

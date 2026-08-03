@@ -123,6 +123,12 @@ pub struct BitfieldInfo {
     pub lo: u32,
     /// High bit index (inclusive).
     pub hi: u32,
+    /// Effective access of this field.
+    ///
+    /// Usually the register's own kind, but a field may narrow it: `"ro"`
+    /// (never written), `"wo"` (never read), or `"w1c"` (write-1-to-clear —
+    /// the UI offers a *Clear* action instead of a value to set).
+    pub access: &'static str,
     /// Type hint: `"raw"`, `"bool"`, an integer type name, or an enum name.
     pub field_type: &'static str,
     /// Enum/bool variants (empty for plain integer fields).
@@ -201,6 +207,8 @@ pub mod spec {
         pub doc: &'static str,
         pub lo: u32,
         pub hi: u32,
+        /// Effective access of this field: `"rw"`, `"ro"`, `"wo"`, or `"w1c"`.
+        pub access: &'static str,
         pub type_name: &'static str,
         pub variants: &'static [Variant],
     }
@@ -252,6 +260,7 @@ pub mod spec {
                             doc: bf.doc,
                             lo: bf.lo,
                             hi: bf.hi,
+                            access: bf.access,
                             field_type: bf.type_name,
                             variants: bf
                                 .variants
