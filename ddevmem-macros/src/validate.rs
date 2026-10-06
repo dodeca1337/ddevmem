@@ -11,7 +11,7 @@ use std::fmt::Display;
 
 use proc_macro2::Span;
 
-use crate::ast::{Bitfield, FieldAccess, FieldType, RegisterEntry, RegisterMap};
+use crate::ast::{Bitfield, EnumDef, FieldAccess, FieldType, RegisterEntry, RegisterMap};
 
 #[derive(Default)]
 struct ErrorSink {
@@ -52,16 +52,30 @@ impl Namespace {
     }
 
     fn claim(&mut self, name: String, span: Span, sink: &mut ErrorSink) {
+        self.claim_hinted(name, span, "", sink);
+    }
+
+    /// Like [`claim`](Self::claim), appending `hint` to the collision error.
+    fn claim_hinted(&mut self, name: String, span: Span, hint: &str, sink: &mut ErrorSink) {
         if self.taken.insert(name.clone(), span).is_some() {
             sink.error(
                 span,
                 format!(
                     "this declaration generates a {} named `{}`, which an earlier \
-                     declaration in the same map also generates",
+                     declaration in the same map also generates{hint}",
                     self.kind, name
                 ),
             );
         }
+    }
+}
+
+/// Largest value a field of `bits` bits can hold.
+fn max_value(bits: u64) -> u64 {
+    if bits >= 64 {
+        u64::MAX
+    } else {
+        (1 << bits) - 1
     }
 }
 
@@ -71,11 +85,61 @@ pub fn validate(map: &RegisterMap) -> syn::Result<()> {
     let mut types = Namespace::new("type");
     let bus_size = map.bus.kind.size_bytes();
 
+    for def in &map.enums {
+        validate_enum(def, &mut types, &mut sink);
+    }
     for entry in &map.entries {
         validate_entry(map, entry, bus_size, &mut methods, &mut types, &mut sink);
     }
 
     sink.finish()
+}
+
+/// Checks an enum declaration on its own; whether its values fit each field
+/// that uses it is checked per field.
+fn validate_enum(def: &EnumDef, types: &mut Namespace, sink: &mut ErrorSink) {
+    types.claim_hinted(
+        def.name.to_string(),
+        def.name.span(),
+        "; to share one enum between fields, declare it once and refer to it \
+         by name (`as Name`)",
+        sink,
+    );
+    if def.variants.is_empty() {
+        sink.error(
+            def.name.span(),
+            format!("enum `{}` must declare at least one variant", def.name),
+        );
+    }
+
+    let mut names = Namespace::new("variant");
+    let mut values: HashMap<u64, Span> = HashMap::new();
+    for variant in &def.variants {
+        names.claim(variant.name.to_string(), variant.name.span(), sink);
+        let Some(value) = variant.value.value else {
+            continue;
+        };
+        // An inline enum's raw type is its register's, which the field-width
+        // check already covers with a more precise message.
+        if let (true, Some(bits)) = (def.standalone, def.raw.kind.width_bits()) {
+            if value > max_value(u64::from(bits)) {
+                sink.error(
+                    variant.value.span(),
+                    format!(
+                        "variant value {value:#x} does not fit in `{}`, the map's bus \
+                         type and the raw type of enum `{}`",
+                        def.raw.ident, def.name
+                    ),
+                );
+            }
+        }
+        if values.insert(value, variant.value.span()).is_some() {
+            sink.error(
+                variant.value.span(),
+                format!("duplicate variant value {value:#x} in enum `{}`", def.name),
+            );
+        }
+    }
 }
 
 fn validate_entry(
@@ -157,15 +221,15 @@ fn validate_entry(
     }
 
     for bf in &entry.bitfields {
-        validate_bitfield(entry, bf, methods, types, sink);
+        validate_bitfield(map, entry, bf, methods, sink);
     }
 }
 
 fn validate_bitfield(
+    map: &RegisterMap,
     entry: &RegisterEntry,
     bf: &Bitfield,
     methods: &mut Namespace,
-    types: &mut Namespace,
     sink: &mut ErrorSink,
 ) {
     let reg = entry.name.to_string();
@@ -268,42 +332,49 @@ fn validate_bitfield(
                 }
             }
         }
-        FieldType::Enum(def) => {
-            types.claim(def.name.to_string(), def.name.span(), sink);
-            if def.variants.is_empty() {
-                sink.error(
-                    def.name.span(),
-                    "an `as enum` bitfield must declare at least one variant",
-                );
-            }
-
-            let mut names = Namespace::new("variant");
-            let mut values: HashMap<u64, Span> = HashMap::new();
+        FieldType::Enum(enum_use) => {
+            let Some(width) = width else {
+                return;
+            };
+            let def = &map.enums[enum_use.index];
+            let raw_max = def
+                .raw
+                .kind
+                .width_bits()
+                .map(|bits| max_value(u64::from(bits)));
             for variant in &def.variants {
-                names.claim(variant.name.to_string(), variant.name.span(), sink);
                 let Some(value) = variant.value.value else {
                     continue;
                 };
-                if let Some(width) = width {
-                    // width <= 64 is guaranteed by the range checks above.
-                    let max = u64::MAX >> (64 - width);
-                    if value > max {
-                        sink.error(
-                            variant.value.span(),
-                            format!(
-                                "variant value {value:#x} does not fit in the {width}-bit \
-                                 field `{field}`"
-                            ),
-                        );
-                    }
+                // Already reported against the declaration.
+                if def.standalone && raw_max.is_some_and(|max| value > max) {
+                    continue;
                 }
-                if values.insert(value, variant.value.span()).is_some() {
+                if value <= max_value(width) {
+                    continue;
+                }
+                if enum_use.inline {
                     sink.error(
                         variant.value.span(),
-                        format!("duplicate variant value {value:#x} in enum `{}`", def.name),
+                        format!(
+                            "variant value {value:#x} does not fit in the {width}-bit \
+                             field `{field}`"
+                        ),
+                    );
+                } else {
+                    sink.error(
+                        enum_use.span,
+                        format!(
+                            "variant `{}` of enum `{}` has the value {value:#x}, which \
+                             does not fit in the {width}-bit field `{field}`",
+                            variant.name, def.name
+                        ),
                     );
                 }
             }
         }
+        // The type is only known to the compiler: `FieldValue` is enforced
+        // by the generated code, and the setter masks whatever it returns.
+        FieldType::Custom(_) => {}
     }
 }

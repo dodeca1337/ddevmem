@@ -189,17 +189,9 @@ pub mod spec {
         }
     }
 
-    #[derive(Debug, Clone, Copy)]
-    pub struct Variant {
-        pub name: &'static str,
-        pub value: u64,
-    }
-
-    /// Ready-made variant table for `as bool` bitfields.
-    pub const BOOL_VARIANTS: &[Variant] = &[
-        Variant { name: "false", value: 0 },
-        Variant { name: "true", value: 1 },
-    ];
+    /// Ready-made variant table for `as bool` bitfields, in the
+    /// `(name, value)` form of [`FieldValue::VARIANTS`](crate::FieldValue::VARIANTS).
+    pub const BOOL_VARIANTS: &[(&str, u64)] = &[("false", 0), ("true", 1)];
 
     #[derive(Debug, Clone, Copy)]
     pub struct Bitfield {
@@ -210,7 +202,7 @@ pub mod spec {
         /// Effective access of this field: `"rw"`, `"ro"`, `"wo"`, or `"w1c"`.
         pub access: &'static str,
         pub type_name: &'static str,
-        pub variants: &'static [Variant],
+        pub variants: &'static [(&'static str, u64)],
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -265,10 +257,7 @@ pub mod spec {
                             variants: bf
                                 .variants
                                 .iter()
-                                .map(|v| VariantInfo {
-                                    name: v.name,
-                                    value: v.value,
-                                })
+                                .map(|&(name, value)| VariantInfo { name, value })
                                 .collect(),
                         })
                         .collect(),

@@ -15,6 +15,22 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 
+/// A field type declared outside the map.
+#[derive(Debug, Clone, Copy)]
+pub struct Divider(u32);
+
+impl ddevmem::FieldValue for Divider {
+    const VARIANTS: &'static [(&'static str, u64)] = &[("1", 0), ("2", 1), ("4", 2), ("8", 3)];
+
+    fn from_bits(bits: u64) -> Self {
+        Divider(1 << bits)
+    }
+
+    fn to_bits(self) -> u64 {
+        u64::from(self.0.trailing_zeros())
+    }
+}
+
 register_map! {
     /// Timer block.
     pub unsafe map Timer (u32) {
@@ -28,8 +44,13 @@ register_map! {
                     Off = 0,
                     Slow = 1,
                     Fast = 2,
-                }
+                },
+                /// Link transport.
+                link: 3 as Link,
+                /// Clock divider.
+                div: 4..=5 as Divider
             },
+        enum Link { Radio = 0, Optical = 1 }
         0x04 => ro sr: u32,
         0x08 => wo cmd: u32,
         0x10 => rw fifo: [u32; 2],
@@ -132,6 +153,13 @@ async fn info_describes_registers_and_expands_arrays() {
     assert_eq!(bitfields[1]["lo"], 1);
     assert_eq!(bitfields[1]["hi"], 2);
     assert_eq!(bitfields[1]["variants"].as_array().unwrap().len(), 3);
+    assert_eq!(bitfields[2]["field_type"], "Link");
+    assert_eq!(
+        bitfields[2]["variants"],
+        json!([{ "name": "Radio", "value": 0 }, { "name": "Optical", "value": 1 }])
+    );
+    assert_eq!(bitfields[3]["field_type"], "Divider");
+    assert_eq!(bitfields[3]["variants"].as_array().unwrap().len(), 4);
 
     assert_eq!(registers[4]["offset"], 0x14);
 

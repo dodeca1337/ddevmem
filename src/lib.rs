@@ -9,8 +9,9 @@
 //!   volatile read, write, and modify operations (checked and unchecked).
 //! - [`register_map!`] — a declarative macro for defining named register maps
 //!   with bus-width enforcement, bitfield accessors, typed bitfields
-//!   (`as bool` / `as u8` / `as enum`), and register arrays (requires the
-//!   `register-map` feature).
+//!   (`as bool` / `as u8` / `as enum`, shared enums, and your own types via
+//!   [`FieldValue`]), and register arrays (requires the `register-map`
+//!   feature).
 //! - [`web`] — an optional [`axum`]-based web UI for viewing and editing
 //!   registers at runtime (requires the `web` feature).
 //!
@@ -60,6 +61,12 @@ mod devmem;
 #[cfg(any(feature = "device", feature = "emulator"))]
 #[doc(inline)]
 pub use devmem::{DevMem, Error};
+
+#[cfg(feature = "register-map")]
+mod field;
+
+#[cfg(feature = "register-map")]
+pub use field::FieldValue;
 
 #[cfg(feature = "web")]
 pub mod web;
@@ -190,7 +197,39 @@ pub mod web;
 /// - `field: 6..=7 as enum Mode { A = 0, B = 1 }` — generates
 ///   `#[derive(Debug, Clone, Copy, PartialEq, Eq)] enum Mode` with
 ///   `from_raw()` / `to_raw()`; raw values not matching any variant map to
-///   the first declared variant.
+///   the first declared variant;
+/// - `field: 6..=7 as Mode` — an enum declared elsewhere in the same map, or
+///   any type implementing [`FieldValue`].
+///
+/// To share an enum between fields, declare it once as an item of the map
+/// body — anywhere among the entries — and name it on each field:
+///
+/// ```rust,no_run
+/// # use ddevmem::register_map;
+/// register_map! {
+///     pub unsafe map Radio (u32) {
+///         /// What a link runs over.
+///         enum LinkMode {
+///             RadioChannel = 0,
+///             OpticalChannel = 1,
+///         }
+///
+///         0x00 => rw cfg: u32 {
+///             link_0_mode: 0 as LinkMode,
+///             link_1_mode: 1 as LinkMode
+///         }
+///     }
+/// }
+/// # fn use_it(radio: &mut Radio) {
+/// radio.set_cfg_link_1_mode(LinkMode::OpticalChannel);
+/// # }
+/// ```
+///
+/// An enum item takes the map's visibility, and its `from_raw()` /
+/// `to_raw()` use the bus type (an inline enum's use its register's type).
+/// Inline enums can be named from other fields the same way. Every
+/// generated enum implements [`FieldValue`], so a field of another map can
+/// use it too.
 ///
 /// # Register arrays
 ///
@@ -238,7 +277,7 @@ pub mod web;
 /// # Compile-time validation
 ///
 /// Misaligned offsets, bit ranges that exceed the register type, `as bool`
-/// on multi-bit fields, enum values that don't fit their field, casts
+/// on multi-bit fields, enum values that don't fit a field using them, casts
 /// narrower than the field, field access that widens the register's own
 /// (a `w1c` field in a `ro` register, say), and name collisions between
 /// generated methods are reported as compile errors pointing at the

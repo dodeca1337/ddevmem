@@ -7,7 +7,8 @@
 //! generated tokens small.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{quote, ToTokens};
+use syn::Type;
 
 use crate::ast::{ConstExpr, FieldType, IntKind, RegisterEntry, RegisterMap};
 
@@ -15,7 +16,7 @@ pub fn expand(map: &RegisterMap) -> TokenStream {
     let name = &map.name;
     let name_str = name.to_string();
     let bus = &map.bus;
-    let specs = map.entries.iter().map(spec_tokens);
+    let specs = map.entries.iter().map(|entry| spec_tokens(map, entry));
 
     // A u64 bus accepts any u64 value; narrower buses reject values that
     // would be silently truncated. (`usize` is checked too — it may be 32-bit.)
@@ -78,15 +79,19 @@ fn u32_tokens(value: &ConstExpr) -> TokenStream {
     }
 }
 
-/// A `ConstExpr` as a `u64` value (variant values in the spec table).
-fn u64_tokens(value: &ConstExpr) -> TokenStream {
-    match value.value {
-        Some(_) => quote!(#value),
-        None => quote!(#value as u64),
+/// The name the UI shows for an external field type: the last path segment
+/// (`Divider` for `crate::clock::Divider`).
+fn type_display(ty: &Type) -> String {
+    match ty {
+        Type::Path(path) => match path.path.segments.last() {
+            Some(segment) => segment.ident.to_string(),
+            None => ty.to_token_stream().to_string(),
+        },
+        _ => ty.to_token_stream().to_string(),
     }
 }
 
-fn spec_tokens(entry: &RegisterEntry) -> TokenStream {
+fn spec_tokens(map: &RegisterMap, entry: &RegisterEntry) -> TokenStream {
     let name = entry.name.to_string();
     let doc = crate::ast::doc_string(&entry.attrs);
     let offset = &entry.offset;
@@ -114,19 +119,19 @@ fn spec_tokens(entry: &RegisterEntry) -> TokenStream {
                 quote!(::ddevmem::web::spec::BOOL_VARIANTS),
             ),
             FieldType::Int(cast) => (cast.ident.to_string(), quote!(&[])),
-            FieldType::Enum(def) => {
-                let entries = def.variants.iter().map(|v| {
-                    let v_name = v.name.to_string();
-                    let v_value = u64_tokens(&v.value);
-                    quote! {
-                        ::ddevmem::web::spec::Variant {
-                            name: #v_name,
-                            value: #v_value,
-                        }
-                    }
-                });
-                (def.name.to_string(), quote!(&[#(#entries),*]))
+            // Every map enum implements `FieldValue`, so one table serves all
+            // the fields sharing it.
+            FieldType::Enum(enum_use) => {
+                let ename = &map.enums[enum_use.index].name;
+                (
+                    ename.to_string(),
+                    quote!(<#ename as ::ddevmem::FieldValue>::VARIANTS),
+                )
             }
+            FieldType::Custom(ty) => (
+                type_display(ty),
+                quote!(<#ty as ::ddevmem::FieldValue>::VARIANTS),
+            ),
         };
 
         let access = bf.access.as_str(entry.access);

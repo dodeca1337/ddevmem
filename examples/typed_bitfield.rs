@@ -1,11 +1,26 @@
-//! Example: typed bitfields — `as bool`, `as u8`, and `as enum`.
+//! Example: typed bitfields — `as bool`, `as u8`, `as enum`, an enum shared
+//! between fields, and a type of your own through `FieldValue`.
 //!
 //! Run with:
 //!   cargo run --example typed_bitfield
 
 use std::sync::Arc;
 
-use ddevmem::{register_map, DevMem};
+use ddevmem::{register_map, DevMem, FieldValue};
+
+/// Input filter length in samples, stored as its base-2 logarithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilterLen(pub u32);
+
+impl FieldValue for FilterLen {
+    fn from_bits(bits: u64) -> Self {
+        FilterLen(1 << bits)
+    }
+
+    fn to_bits(self) -> u64 {
+        u64::from(self.0.trailing_zeros())
+    }
+}
 
 register_map! {
     /// Timer controller with typed bitfields.
@@ -37,7 +52,25 @@ register_map! {
             },
         0x08 =>
             /// Counter value.
-            rw cnt: u32
+            rw cnt: u32,
+
+        /// Which edge a capture channel triggers on.
+        enum Edge {
+            Rising  = 0,
+            Falling = 1,
+            Both    = 2,
+        }
+
+        0x0C =>
+            /// Capture configuration.
+            rw ccr: u32 {
+                /// Channel 1 trigger edge.
+                ch1_edge: 0..=1 as Edge,
+                /// Channel 2 trigger edge.
+                ch2_edge: 2..=3 as Edge,
+                /// Input filter length.
+                filter: 4..=6 as FilterLen,
+            }
     }
 }
 
@@ -77,6 +110,26 @@ fn main() {
     timer.set_cr(0);
     assert_eq!(timer.cr_mode(), TimerMode::Stopped);
     println!("mode after clear = {:?}", timer.cr_mode());
+
+    // One enum shared by two fields
+    timer.set_ccr_ch1_edge(Edge::Falling);
+    timer.set_ccr_ch2_edge(Edge::Both);
+    assert_eq!(timer.ccr_ch1_edge(), Edge::Falling);
+    assert_eq!(timer.ccr_ch2_edge(), Edge::Both);
+    println!(
+        "\nch1 = {}, ch2 = {}",
+        timer.ccr_ch1_edge(),
+        timer.ccr_ch2_edge()
+    );
+
+    // A type of your own, converted through `FieldValue`
+    timer.set_ccr_filter(FilterLen(16));
+    assert_eq!(timer.ccr_filter(), FilterLen(16));
+    println!("filter = {:?}", timer.ccr_filter());
+
+    // ch1(1) | ch2(2)<<2 | filter(log2 16 = 4)<<4 = 1 + 8 + 64 = 73
+    println!("CCR = 0x{:08X}", timer.ccr());
+    assert_eq!(timer.ccr(), 0x49);
 
     println!("\nAll assertions passed!");
 }

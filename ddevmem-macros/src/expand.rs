@@ -17,7 +17,8 @@ use quote::{format_ident, quote, ToTokens};
 use syn::{Attribute, Ident, LitInt};
 
 use crate::ast::{
-    Access, Bitfield, ConstExpr, EnumDef, FieldAccess, FieldType, RegisterEntry, RegisterMap,
+    Access, Bitfield, ConstExpr, EnumDef, FieldAccess, FieldType, IntKind, RegisterEntry,
+    RegisterMap,
 };
 
 pub fn expand(map: &RegisterMap) -> TokenStream {
@@ -308,20 +309,12 @@ fn field_pos(map: &RegisterMap, entry: &RegisterEntry, bf: &Bitfield, consts: &m
 // ─── Enums ───────────────────────────────────────────────────────────────────
 
 fn expand_enums(map: &RegisterMap) -> TokenStream {
-    let mut out = TokenStream::new();
-    for entry in &map.entries {
-        for bf in &entry.bitfields {
-            if let FieldType::Enum(def) = &bf.ty {
-                out.extend(expand_enum(map, entry, def));
-            }
-        }
-    }
-    out
+    map.enums.iter().map(|def| expand_enum(map, def)).collect()
 }
 
 /// Emits an enum variant value retyped to `ty`: literal values become plain
 /// literals (adopting `ty` by inference), expressions get an explicit cast.
-fn variant_value(value: &ConstExpr, ty: &crate::ast::IntType) -> TokenStream {
+fn variant_value(value: &ConstExpr, ty: &impl ToTokens) -> TokenStream {
     match value.value {
         Some(v) => {
             let lit = dec(v);
@@ -334,27 +327,11 @@ fn variant_value(value: &ConstExpr, ty: &crate::ast::IntType) -> TokenStream {
     }
 }
 
-fn expand_enum(map: &RegisterMap, entry: &RegisterEntry, def: &EnumDef) -> TokenStream {
-    let vis = &map.vis;
-    let ty = &entry.ty;
-    let name = &def.name;
+/// Body of a conversion from `raw: ty` into the enum. Values not matching
+/// any variant map to the first one.
+fn decode_body(def: &EnumDef, ty: &impl ToTokens) -> TokenStream {
     let first = &def.variants[0].name;
-
-    let variant_defs = def.variants.iter().map(|v| {
-        let attrs = &v.attrs;
-        let vname = &v.name;
-        quote! {
-            #(#attrs)*
-            #vname
-        }
-    });
-
-    let all_literal = def.variants.iter().all(|v| v.value.value.is_some());
-    let from_raw_doc = format!(
-        "Converts a raw field value into the enum. Values not matching any \
-         declared variant map to [`{name}::{first}`]."
-    );
-    let from_raw_body = if all_literal {
+    if def.variants.iter().all(|v| v.value.value.is_some()) {
         // Every value is a literal, so a `match` is possible; the first
         // variant is covered by the `_` arm.
         let arms = def.variants.iter().skip(1).map(|v| {
@@ -383,7 +360,30 @@ fn expand_enum(map: &RegisterMap, entry: &RegisterEntry, def: &EnumDef) -> Token
             #(#checks)*
             Self::#first
         }
-    };
+    }
+}
+
+fn expand_enum(map: &RegisterMap, def: &EnumDef) -> TokenStream {
+    let vis = &map.vis;
+    let attrs = &def.attrs;
+    let ty = &def.raw;
+    let name = &def.name;
+    let first = &def.variants[0].name;
+
+    let variant_defs = def.variants.iter().map(|v| {
+        let attrs = &v.attrs;
+        let vname = &v.name;
+        quote! {
+            #(#attrs)*
+            #vname
+        }
+    });
+
+    let from_raw_doc = format!(
+        "Converts a raw field value into the enum. Values not matching any \
+         declared variant map to [`{name}::{first}`]."
+    );
+    let from_raw_body = decode_body(def, ty);
 
     let to_raw_arms = def.variants.iter().map(|v| {
         let vname = &v.name;
@@ -391,7 +391,21 @@ fn expand_enum(map: &RegisterMap, entry: &RegisterEntry, def: &EnumDef) -> Token
         quote!(Self::#vname => #value,)
     });
 
+    let u64_ty = quote!(u64);
+    let from_bits_body = decode_body(def, &u64_ty);
+    let variant_table = def.variants.iter().map(|v| {
+        let vname = v.name.to_string();
+        let value = variant_value(&v.value, &u64_ty);
+        quote!((#vname, #value))
+    });
+    let to_bits = if def.raw.kind == IntKind::U64 {
+        quote!(self.to_raw())
+    } else {
+        quote!(self.to_raw() as u64)
+    };
+
     quote! {
+        #(#attrs)*
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #vis enum #name {
             #(#variant_defs,)*
@@ -410,6 +424,20 @@ fn expand_enum(map: &RegisterMap, entry: &RegisterEntry, def: &EnumDef) -> Token
                 match self {
                     #(#to_raw_arms)*
                 }
+            }
+        }
+
+        impl ::ddevmem::FieldValue for #name {
+            const VARIANTS: &'static [(&'static str, u64)] = &[#(#variant_table),*];
+
+            #[inline]
+            fn from_bits(raw: u64) -> Self {
+                #from_bits_body
+            }
+
+            #[inline]
+            fn to_bits(self) -> u64 {
+                #to_bits
             }
         }
 
@@ -991,9 +1019,12 @@ fn field_write_expr(
             };
             (quote!(#cast), pos.insert(value, true))
         }
-        FieldType::Enum(def) => {
+        FieldType::Enum(enum_use) => {
+            let def = &map.enums[enum_use.index];
             let ename = &def.name;
-            let value = if same_ty {
+            let value = if !converts_directly(map, entry, def) {
+                to_bits(map, ename)
+            } else if def.raw.kind == map.bus.kind {
                 quote!(value.to_raw())
             } else {
                 quote!((value.to_raw() as #bus))
@@ -1003,6 +1034,37 @@ fn field_write_expr(
                 || matches!(pos, FieldPos::Const { .. });
             (quote!(#ename), pos.insert(value, masked))
         }
+        FieldType::Custom(ty) => (quote!(#ty), pos.insert(to_bits(map, ty), true)),
+    }
+}
+
+/// Whether an enum of this map can carry `entry`'s fields through its own
+/// `from_raw` / `to_raw`, which needs a raw type that holds any of the
+/// register's values: the bus type, or the register's type itself. An inline
+/// enum reused in a register of another type falls back to `FieldValue`,
+/// like any external type.
+fn converts_directly(map: &RegisterMap, entry: &RegisterEntry, def: &EnumDef) -> bool {
+    def.raw.kind == map.bus.kind || def.raw.kind == entry.ty.kind
+}
+
+/// `<ty as FieldValue>::from_bits(..)` over bus-domain bits widened to `u64`.
+fn from_bits(map: &RegisterMap, ty: &impl ToTokens, extract: TokenStream) -> TokenStream {
+    let bits = if map.bus.kind == IntKind::U64 {
+        extract
+    } else {
+        quote!((#extract) as u64)
+    };
+    quote!(<#ty as ::ddevmem::FieldValue>::from_bits(#bits))
+}
+
+/// `<ty as FieldValue>::to_bits(value)`, narrowed to the bus type.
+fn to_bits(map: &RegisterMap, ty: &impl ToTokens) -> TokenStream {
+    let bus = &map.bus;
+    let bits = quote!(<#ty as ::ddevmem::FieldValue>::to_bits(value));
+    if map.bus.kind == IntKind::U64 {
+        bits
+    } else {
+        quote!((#bits as #bus))
     }
 }
 
@@ -1049,16 +1111,21 @@ fn expand_bitfield(
             };
             (quote!(#cast), body)
         }
-        FieldType::Enum(def) => {
+        FieldType::Enum(enum_use) => {
+            let def = &map.enums[enum_use.index];
             let ename = &def.name;
+            let raw_ty = &def.raw;
             let extract = pos.extract(read.clone());
-            let raw = if same_ty {
-                quote!(#extract)
+            let body = if !converts_directly(map, entry, def) {
+                from_bits(map, ename, extract)
+            } else if def.raw.kind == map.bus.kind {
+                quote!(#ename::from_raw(#extract))
             } else {
-                quote!((#extract) as #ty)
+                quote!(#ename::from_raw((#extract) as #raw_ty))
             };
-            (quote!(#ename), quote!(#ename::from_raw(#raw)))
+            (quote!(#ename), body)
         }
+        FieldType::Custom(ty) => (quote!(#ty), from_bits(map, ty, pos.extract(read.clone()))),
     };
 
     let mut out = TokenStream::new();
